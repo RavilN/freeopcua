@@ -787,6 +787,11 @@ private:
       else
       {
         callbackIt->second(std::move(buffer), std::move(header));
+        if (header.RequestHandle == 6) //TODO - remove it, for debug only
+        {
+          int i = 0;
+          i = i + 1;
+        }
         Callbacks.erase(callbackIt);
       }
       lock.unlock();

@@ -16,50 +16,78 @@ namespace OpcUa
   template <typename Request, typename Response>
   class AsyncRequestContext
   {
+  private:
+    AsyncRequestContext(){}
+    AsyncRequestContext(AsyncRequestContext&){}
+
   public:
     AsyncRequestContext(std::shared_ptr<Request> requestToExecute, std::function<bool(const std::shared_ptr<Request> request, std::shared_ptr<Response> response)> callbackFunctionArg)
-      : lock(m)
+      //: lock(m)
     {
       this->request = requestToExecute;
       this->response = std::make_shared<Response>();
       callbackFunction = callbackFunctionArg;
+      isPending = true;
     }
-
+    ~AsyncRequestContext()
+    {
+      int i = 0;
+      i = i + 1;
+      if (isPending)
+      {
+        Cancel();
+      }
+    }
     void OnDataReceived(std::vector<char> data, OpcUa::ResponseHeader h)
     {
-      response->Header = std::move(h);
-      if (data.empty())
       {
-        std::cout << "Error: Received packet with empty body from server" << std::endl;
-      }
-      else
-      {
-        try
+        std::lock_guard<std::mutex> lock(m);
+        response->Header = std::move(h);
+        if (data.empty())
         {
-          BufferInputChannel bufferInput(data);
-          IStreamBinary in(bufferInput);
-          in >> *response;
+          std::cout << "Error: Received packet with empty body from server" << std::endl;
         }
-        catch (std::exception ex)
+        else
         {
-          response->Header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
-          //TODO: log error, add diagnostic info to the response
+          try
+          {
+            BufferInputChannel bufferInput(data);
+            IStreamBinary in(bufferInput);
+            in >> *response;
+          }
+          catch (std::exception ex)
+          {
+            response->Header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+            //TODO: log error, add diagnostic info to the response
+          }
         }
+        isPending = false;
       }
       callbackFunction(request, response);
       doneEvent.notify_all();
     }
-
+    void Cancel()
+    {
+      {
+        std::lock_guard<std::mutex> lock(m);
+        response->Header.ServiceResult = OpcUa::StatusCode::BadRequestCancelledByClient;
+        callbackFunction(request, response);
+        isPending = false;
+      }
+      doneEvent.notify_all();
+    }
     std::shared_ptr<Response> WaitForCompletion(std::chrono::milliseconds msec)
     {
       if (msec == 0)
       {
         msec = 0x7FFFFFFF; //TODO - put proper max value
       }
-      doneEvent.wait_for(lock, msec);
-
+      std::unique_lock<std::mutex> l(m);
+      doneEvent.wait_for(lock, msec, []{return !isPending; });
+      m.unlock();
       return response;
     }
+
 
   protected:
     std::shared_ptr<Request> request;
@@ -67,14 +95,15 @@ namespace OpcUa
     std::function<bool(const std::shared_ptr<Request>& request, std::shared_ptr<Response> response)> callbackFunction;
   private:
     std::mutex m;
-    std::unique_lock<std::mutex> lock;
+    //std::unique_lock<std::mutex> lock;
     std::condition_variable doneEvent;
+    bool isPending;
   };
 
   class AsyncUaClient
   {
   public:
-    virtual ~AsyncUaClient(){}
+    virtual ~AsyncUaClient() { }
     virtual std::shared_ptr<AsyncRequestContext<OpcUa::BrowseRequest, OpcUa::BrowseResponse>> beginSend(std::shared_ptr<OpcUa::BrowseRequest> request, std::function<bool(const std::shared_ptr<OpcUa::BrowseRequest>& request, std::shared_ptr<OpcUa::BrowseResponse> response)>callbackArg) { return 0; }
     virtual std::shared_ptr<AsyncRequestContext<OpcUa::ReadRequest, OpcUa::ReadResponse>> beginSend(std::shared_ptr<OpcUa::ReadRequest> request, std::function<bool(const std::shared_ptr<OpcUa::ReadRequest>& request, std::shared_ptr<OpcUa::ReadResponse> response)>callbackArg) { return 0; }
   };

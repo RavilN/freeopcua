@@ -30,6 +30,7 @@
 #include <chrono>
 #include <atomic>
 
+#include "async_ua_client.h"
 
 namespace OpcUa
 {
@@ -139,7 +140,7 @@ namespace OpcUa
     // returned object can then be used to subscribe 
     // to datachange or custom events from server
     std::unique_ptr<Subscription> CreateSubscription(unsigned int period, SubscriptionHandler& client);
-
+    std::shared_ptr<AsyncUaClient> GetAsyncClient();
   private:
     void OpenSecureChannel();
     void CloseSecureChannel();

@@ -287,6 +287,7 @@ namespace OpcUa
     if ( ! Server ) { throw std::runtime_error("Not connected");}
     Node namespacearray(Server, ObjectId::Server_NamespaceArray);
     return namespacearray.GetValue().As<std::vector<std::string>>();;
+
   }
 
   uint32_t UaClient::GetNamespaceIndex(std::string uri)
@@ -341,6 +342,11 @@ namespace OpcUa
     params.RequestedPublishingInterval = period;
 
     return std::unique_ptr<Subscription>(new Subscription (Server, params, callback, Debug));
+  }
+
+  std::shared_ptr<AsyncUaClient> UaClient::GetAsyncClient()
+  {
+    return Server->GetAsyncClient();
   }
 
 } // namespace OpcUa

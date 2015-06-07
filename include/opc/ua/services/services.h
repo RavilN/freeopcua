@@ -19,13 +19,13 @@
 #include <opc/ua/services/node_management.h>
 #include <opc/ua/services/subscriptions.h>
 #include <opc/ua/services/view.h>
+#include <opc/ua/client/async_ua_client.h>
 
 #include <memory>
 #include <vector>
 
 namespace OpcUa
 {
-
   struct RemoteSessionParameters
   {
     ApplicationDescription ClientDescription;
@@ -36,7 +36,7 @@ namespace OpcUa
     Duration Timeout;
   };
 
-  class Services : private Common::Interface
+  class Services : public AsyncUaClient, private Common::Interface
   {
   public:
     DEFINE_CLASS_POINTERS(Services);
@@ -54,6 +54,10 @@ namespace OpcUa
     virtual NodeManagementServices::SharedPtr NodeManagement() = 0;
     virtual SubscriptionServices::SharedPtr Subscriptions() = 0;
     virtual ViewServices::SharedPtr Views() = 0;
+    virtual std::shared_ptr<AsyncUaClient> GetAsyncClient(){ return 0; }
+    virtual std::shared_ptr<AsyncRequestContext<OpcUa::BrowseRequest, OpcUa::BrowseResponse>> beginSend(std::shared_ptr<OpcUa::BrowseRequest> request, std::function<bool(const std::shared_ptr<OpcUa::BrowseRequest>& request, std::shared_ptr<OpcUa::BrowseResponse> response)>callbackArg) { return 0; }
+    virtual std::shared_ptr<AsyncRequestContext<OpcUa::ReadRequest, OpcUa::ReadResponse>> beginSend(std::shared_ptr<OpcUa::ReadRequest> request, std::function<bool(const std::shared_ptr<OpcUa::ReadRequest>& request, std::shared_ptr<OpcUa::ReadResponse> response)>callbackArg) { return 0; }
+
   };
 
 }

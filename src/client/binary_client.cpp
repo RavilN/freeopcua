@@ -28,10 +28,10 @@
 #include <thread>
 #include <iostream>
 
+#include "opc/ua/client/async_ua_client.h"
 
 namespace
 {
-
   using namespace OpcUa;
   using namespace OpcUa::Binary;
 
@@ -76,7 +76,6 @@ namespace
     std::size_t Pos;
   };
 
-
   template <typename T>
   class RequestCallback
   {
@@ -90,7 +89,7 @@ namespace
     {
       //PrintBlob(data);
       Data = std::move(data);
-	  this->header = std::move(h);
+      this->header = std::move(h);
       doneEvent.notify_all();
     }
 
@@ -98,10 +97,10 @@ namespace
     {
       doneEvent.wait_for(lock, msec);
       T result;
-	  result.Header = std::move(this->header);
+	    result.Header = std::move(this->header);
       if ( Data.empty() )
       {
-        std::cout << "Error: received empty packet from server" << std::endl;
+        std::cout << "Error: Received empty packet from server" << std::endl;
       }
 	  else
 	  {
@@ -114,7 +113,7 @@ namespace
 
   private:
     std::vector<char> Data;
-	ResponseHeader	  header;
+	  ResponseHeader	  header;
     std::mutex m;
     std::unique_lock<std::mutex> lock;
     std::condition_variable doneEvent;
@@ -186,7 +185,8 @@ namespace
     , public NodeManagementServices
     , public SubscriptionServices
     , public ViewServices
-    , public std::enable_shared_from_this<BinaryClient>
+    , public OpcUa::AsyncUaClient
+    , public std::enable_shared_from_this < BinaryClient >
   {
   private:
     typedef std::function<void(std::vector<char>, ResponseHeader)> ResponseCallback;
@@ -246,7 +246,7 @@ namespace
     {
       if (Debug)  { std::cout << "binary_client| CreateSession -->" << std::endl; }
       CreateSessionRequest request;
-      request.Header = CreateRequestHeader();
+      CreateRequestHeader(request.Header);
 
       request.Parameters.ClientDescription.URI = parameters.ClientDescription.URI;
       request.Parameters.ClientDescription.ProductURI = parameters.ClientDescription.ProductURI;
@@ -347,7 +347,7 @@ namespace
     {
       if (Debug)  { std::cout << "binary_client| GetEndpoints -->" << std::endl; }
       OpcUa::GetEndpointsRequest request;
-      request.Header = CreateRequestHeader();
+      CreateRequestHeader(request.Header);
       request.Filter.EndpointURL = filter.EndpointURL;
       request.Filter.LocaleIds = filter.LocaleIds;
       request.Filter.ProfileUries = filter.ProfileUries;
@@ -458,7 +458,7 @@ namespace
     {
       if (Debug) {std::cout << "binary_client| Publish -->" << "request with " << originalrequest.Parameters.Acknowledgements.size() << " acks" << std::endl;}
       PublishRequest request(originalrequest);
-      request.Header = CreateRequestHeader();
+      CreateRequestHeader(request.Header);
       request.Header.Timeout = 0; //We do not want the request to timeout!
 
       ResponseCallback responseCallback = [this](std::vector<char> buffer, ResponseHeader h){
@@ -520,7 +520,7 @@ namespace
     {
       if (Debug) {std::cout << "binary_client| Republish -->" << std::endl; }
       RepublishRequest request;
-      request.Header = CreateRequestHeader();
+      CreateRequestHeader(request.Header);
       request.Parameters = params;
 
       RepublishResponse response = Send<RepublishResponse>(request);
@@ -540,7 +540,7 @@ namespace
     {
       if (Debug)  { std::cout << "binary_client| TranslateBrowsePathsToNodeIds -->" << std::endl; }
       TranslateBrowsePathsToNodeIdsRequest request;
-      request.Header = CreateRequestHeader();
+      CreateRequestHeader(request.Header);
       request.Parameters = params;
       const TranslateBrowsePathsToNodeIdsResponse response = Send<TranslateBrowsePathsToNodeIdsResponse>(request);
       if (Debug)  { std::cout << "binary_client| TranslateBrowsePathsToNodeIds <--" << std::endl; }
@@ -559,7 +559,7 @@ namespace
         std::cout << std::endl;
       }
       BrowseRequest request;
-      request.Header = CreateRequestHeader();
+      CreateRequestHeader(request.Header);
       request.Query = query;
       const BrowseResponse response = Send<BrowseResponse>(request);
       for ( BrowseResult result : response.Results )
@@ -590,8 +590,13 @@ namespace
       return response.Results;
     }
 
+  virtual std::shared_ptr<OpcUa::AsyncUaClient> GetAsyncClient()
+  {
+    return shared_from_this();
+  }
+
   private:
-    //FIXME: this method should be removed, better add realease option to BrowseNext
+    //FIXME: this method should be removed, better add release option to BrowseNext
     void Release() const
     {
       ContinuationPoints.clear();
@@ -649,7 +654,7 @@ private:
     template <typename Response, typename Request>
     Response Send(Request request) const
     {
-      request.Header = CreateRequestHeader();
+      CreateRequestHeader(request.Header);
 
       RequestCallback<Response> requestCallback;
       ResponseCallback responseCallback = [&requestCallback](std::vector<char> buffer, ResponseHeader h){
@@ -662,6 +667,35 @@ private:
       Send(request);
 
       return requestCallback.WaitForData(std::chrono::milliseconds(request.Header.Timeout));
+    }
+
+    virtual std::shared_ptr<AsyncRequestContext<OpcUa::BrowseRequest, OpcUa::BrowseResponse>> beginSend(std::shared_ptr<OpcUa::BrowseRequest> request, std::function<bool(const std::shared_ptr<OpcUa::BrowseRequest>& request, std::shared_ptr<OpcUa::BrowseResponse> response)>callbackArg)
+    {
+      CreateRequestHeader(request->Header);
+      std::shared_ptr<AsyncRequestContext<BrowseRequest, BrowseResponse>> requestContext = std::make_shared<AsyncRequestContext<BrowseRequest, BrowseResponse>>(request, callbackArg);
+      ResponseCallback responseCallback = [=](std::vector<char> buffer, ResponseHeader h){
+        requestContext->OnDataReceived(std::move(buffer), std::move(h));
+      };
+      std::unique_lock<std::mutex> lock(Mutex);
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, responseCallback));
+      lock.unlock();
+      Send(*request);
+      return requestContext;
+    }
+
+    virtual std::shared_ptr<AsyncRequestContext<OpcUa::ReadRequest, OpcUa::ReadResponse>> beginSend(std::shared_ptr<OpcUa::ReadRequest> request, std::function<bool(const std::shared_ptr<OpcUa::ReadRequest>& request, std::shared_ptr<OpcUa::ReadResponse> response)>callbackArg)
+    {
+      CreateRequestHeader(request->Header);
+
+      std::shared_ptr<AsyncRequestContext<ReadRequest, ReadResponse>> requestContext = std::make_shared<AsyncRequestContext<ReadRequest, ReadResponse>>(request, callbackArg);
+      ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
+        requestContext->OnDataReceived(std::move(buffer), std::move(h));
+      };
+      std::unique_lock<std::mutex> lock(Mutex);
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, responseCallback));
+      lock.unlock();
+      Send(*request);
+      return requestContext;
     }
 
     template <typename Request>
@@ -749,11 +783,13 @@ private:
       if (callbackIt == Callbacks.end())
       {
         std::cout << "binary_client| No callback found for message with id: " << id << " and handle " << header.RequestHandle << std::endl;
-        return;
       }
-	  callbackIt->second(std::move(buffer), std::move(header));
-
-      Callbacks.erase(callbackIt);
+      else
+      {
+        callbackIt->second(std::move(buffer), std::move(header));
+        Callbacks.erase(callbackIt);
+      }
+      lock.unlock();
     }
 
     Binary::Acknowledge HelloServer(const SecureConnectionParams& params)
@@ -797,13 +833,12 @@ private:
       return sequence;
     }
 
-    RequestHeader CreateRequestHeader() const
+    void CreateRequestHeader(RequestHeader& header) const
     {
-      RequestHeader header;
       header.SessionAuthenticationToken = AuthenticationToken;
       header.RequestHandle = GetRequestHandle();
       header.Timeout = 10000;
-      return header;
+      return;
     }
 
     unsigned GetRequestHandle() const
@@ -826,7 +861,7 @@ private:
     mutable std::vector<std::vector<uint8_t>> ContinuationPoints;
     mutable CallbackMap Callbacks;
     const bool Debug = true;
-    bool Finished = false;
+    std::atomic<bool> Finished = false;
 
     std::thread callback_thread;
     CallbackThread CallbackService;
@@ -849,9 +884,7 @@ private:
     hdr.AddSize(RawSize(sequence));
     Stream << hdr << algorithmHeader << sequence << request << flush;
   }
-
 } // namespace
-
 
 OpcUa::Services::SharedPtr OpcUa::CreateBinaryClient(OpcUa::IOChannel::SharedPtr channel, const OpcUa::SecureConnectionParams& params, bool debug)
 {
@@ -867,3 +900,4 @@ OpcUa::Services::SharedPtr OpcUa::CreateBinaryClient(const std::string& endpoint
   params.SecurePolicy = "http://opcfoundation.org/UA/SecurityPolicy#None";
   return CreateBinaryClient(channel, params, debug);
 }
+

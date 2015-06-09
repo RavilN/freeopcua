@@ -47,8 +47,11 @@ namespace OpcUa
     {
       if (Debug)  { std::cout << "KeepAliveThread | Sleeping for: " << (int64_t) ( Period * 0.7 )<< std::endl; }
       std::unique_lock<std::mutex> lock(Mutex);
-      std::cv_status status = Condition.wait_for(lock, std::chrono::milliseconds( (int64_t) ( Period * 0.7) )); 
-      if (status == std::cv_status::no_timeout ) 
+      if (Condition.wait_for(lock, std::chrono::milliseconds((int64_t)(Period * 0.7)), [=](){return StopRequest==true; } ) )
+      {
+        break;
+      }
+      if (StopRequest)
       {
         break;
       }

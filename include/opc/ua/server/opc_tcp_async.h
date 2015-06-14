@@ -35,7 +35,7 @@ namespace OpcUa
   namespace Server
   {
 
-    class AsyncOpcTcp : private Common::Interface
+    class AsyncOpcTcp : protected Common::Interface
     {
     public:
       DEFINE_CLASS_POINTERS(AsyncOpcTcp);

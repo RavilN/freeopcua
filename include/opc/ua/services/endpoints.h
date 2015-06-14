@@ -26,14 +26,14 @@ namespace OpcUa
   {
   };
 
-  class EndpointServices : private Common::Interface
+  class EndpointServices : virtual protected Common::Interface
   {
   public:
     DEFINE_CLASS_POINTERS(EndpointServices);
 
   public:
     virtual std::vector<ApplicationDescription> FindServers(const FindServersParameters& params) const = 0;
-    // TODO Here all structuresmust be in one namespace.
+    // TODO Here all structures must be in one namespace.
     virtual std::vector<EndpointDescription> GetEndpoints(const EndpointsFilter& filter) const = 0;
     virtual void RegisterServer(const ServerParameters& parameters) = 0;
   };

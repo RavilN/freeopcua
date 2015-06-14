@@ -33,7 +33,7 @@ namespace Common
     AddonParameters Parameters;
   };
 
-  class AddonsManager : private Interface
+  class AddonsManager : protected Interface
   {
   public:
     DEFINE_CLASS_POINTERS(AddonsManager);

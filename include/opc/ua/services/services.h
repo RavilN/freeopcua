@@ -36,7 +36,7 @@ namespace OpcUa
     Duration Timeout;
   };
 
-  class Services : public AsyncUaClient, private Common::Interface
+  class Services : virtual public AsyncUaClient, virtual protected Common::Interface
   {
   public:
     DEFINE_CLASS_POINTERS(Services);

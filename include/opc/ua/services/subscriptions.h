@@ -21,7 +21,7 @@
 namespace OpcUa
 {
 
-  class SubscriptionServices : private Common::Interface
+  class SubscriptionServices : virtual protected Common::Interface
   {
   public:
     DEFINE_CLASS_POINTERS(SubscriptionServices);

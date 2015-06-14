@@ -22,7 +22,7 @@ namespace OpcUa
   namespace Internal
   {
 
-    class XmlAddressSpaceLoader : private Common::Interface
+    class XmlAddressSpaceLoader : protected Common::Interface
     {
     public:
       DEFINE_CLASS_POINTERS(XmlAddressSpaceLoader);

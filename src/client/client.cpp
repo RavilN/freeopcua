@@ -80,16 +80,26 @@ namespace OpcUa
 
   void KeepAliveThread::Stop()
   {
-    if (Debug)  { std::cout << "KeepAliveThread | Stopping." << std::endl; }
-    StopRequest = true;
-    Condition.notify_all();
-    try
+    if (Running)
     {
-      Thread.join();
+      if (Debug)  { std::cout << "KeepAliveThread | Stopping." << std::endl; }
+      StopRequest = true;
+      Condition.notify_all();
+      try
+      {
+        Thread.join();
+      }
+      catch (std::system_error ex)
+      {
+        if (Debug) { std::cout << "KeepaliveThread | Exception thrown at attempt to join: " << ex.what() << std::endl; }
+      }
     }
-    catch (std::system_error ex)
+    else
     {
-      if (Debug) { std::cout << "KeepaliveThread | Exception thrown at attempt to join: " << ex.what() << std::endl; }
+      if (Debug)
+      {
+        std::cout << "KeepAliveThread | Not running" << std::endl;
+      }
     }
   }
 

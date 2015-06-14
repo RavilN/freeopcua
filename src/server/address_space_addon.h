@@ -30,6 +30,7 @@ namespace OpcUa
     public:
       DEFINE_CLASS_POINTERS(AddressSpaceAddon);
 
+    public:
     AddressSpaceAddon();
     virtual ~AddressSpaceAddon();
 

@@ -22,7 +22,7 @@
 namespace OpcUa
 {
 
-  class NodeManagementServices : private Common::Interface
+  class NodeManagementServices : virtual protected Common::Interface
   {
   public:
     DEFINE_CLASS_POINTERS(NodeManagementServices);

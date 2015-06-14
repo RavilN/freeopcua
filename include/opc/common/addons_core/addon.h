@@ -19,7 +19,7 @@
 namespace Common
 {
 
-  class Addon : private Common::Interface
+  class Addon : protected Common::Interface
   {
   public:
     DEFINE_CLASS_POINTERS(Addon);
@@ -36,7 +36,7 @@ namespace Common
   };
 
   // @brief factory of addon.
-  class AddonFactory : private Common::Interface
+  class AddonFactory : protected Common::Interface
   {
   public:
     DEFINE_CLASS_POINTERS(AddonFactory);

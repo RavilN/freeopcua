@@ -19,7 +19,7 @@
 namespace Common
 {
 
-  class ThreadObserver : private Common::Interface
+  class ThreadObserver : protected Common::Interface
   {
   public:
     /// @brief thread exited with Success.

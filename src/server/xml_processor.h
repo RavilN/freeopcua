@@ -20,7 +20,7 @@ namespace OpcUa
   namespace Internal
   {
 
-    class XmlProcessor : private Common::Interface
+    class XmlProcessor : protected Common::Interface
     {
     public:
       virtual void Process(xmlNode& node) = 0;

@@ -222,7 +222,7 @@ OpcUa::QualifiedName OpcUa::ToQualifiedName(const std::string& str, uint32_t def
   
   if (default_ns == std::numeric_limits<uint32_t>::max() )
   {
-    throw(std::runtime_error("Namespace index coult not be parsed from string and not default index specified in string: " + str));
+    throw(std::runtime_error("Namespace index could not be parsed from string and not default index specified in string: " + str));
   }
 
   return QualifiedName(default_ns, str);

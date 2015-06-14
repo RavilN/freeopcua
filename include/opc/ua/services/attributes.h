@@ -22,7 +22,7 @@
 namespace OpcUa
 {
 
-    class AttributeServices : private Common::Interface
+    class AttributeServices : virtual protected Common::Interface
     {
     public:
       DEFINE_CLASS_POINTERS(AttributeServices);

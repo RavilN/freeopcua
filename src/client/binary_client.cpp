@@ -202,23 +202,27 @@ namespace
       , RequestHandle(0)
       , Debug(debug)
       , CallbackService(debug)
-
     {
       //Initialize the worker thread for subscriptions
       callback_thread = std::thread([&](){ CallbackService.Run(); });
 
       HelloServer(params);
 
-      ReceiveThread = std::move(std::thread([this](){
-        try
+      ReceiveThread = std::move(std::thread([this]()
+      {
+        while(!Finished)
         {
-          while(!Finished)
+          try
+          {
             Receive();
-        }
-        catch (const std::exception& exc)
-        {
-          if (Debug)  { std::cerr << "binary_client| CallbackThread : Error receiving data: "; }
-          std::cerr << exc.what() << std::endl;
+          }
+          catch (const std::exception& exc)
+          {
+            if (Debug)
+            {
+              std::cerr << "binary_client| CallbackThread : Error receiving data: " << exc.what() << std::endl;
+            }
+          }
         }
       }));
     }
@@ -787,11 +791,6 @@ private:
       else
       {
         callbackIt->second(std::move(buffer), std::move(header));
-        if (header.RequestHandle == 6) //TODO - remove it, for debug only
-        {
-          int i = 0;
-          i = i + 1;
-        }
         Callbacks.erase(callbackIt);
       }
       lock.unlock();

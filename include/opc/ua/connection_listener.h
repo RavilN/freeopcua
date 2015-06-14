@@ -20,14 +20,14 @@ namespace OpcUa
   namespace Server
   {
 
-    class IncomingConnectionProcessor : private Common::Interface
+    class IncomingConnectionProcessor : protected Common::Interface
     {
     public:
       virtual void Process(IOChannel::SharedPtr clientChannel) = 0;
       virtual void StopProcessing(IOChannel::SharedPtr clientChannel) = 0;
     };
 
-    class ConnectionListener : private Common::Interface
+    class ConnectionListener : protected Common::Interface
     {
     public:
       virtual void Start(std::shared_ptr<IncomingConnectionProcessor> connectionProcssor) = 0;

@@ -21,7 +21,7 @@
 namespace OpcUa
 {
 
-  class ViewServices : private Common::Interface
+  class ViewServices : virtual protected Common::Interface
   {
   public:
     DEFINE_CLASS_POINTERS(ViewServices);

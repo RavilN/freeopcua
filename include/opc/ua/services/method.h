@@ -21,7 +21,7 @@
 namespace OpcUa
 {
 
-  class MethodServices : private Common::Interface
+  class MethodServices : virtual protected Common::Interface
   {
   public:
     DEFINE_CLASS_POINTERS(MethodServices);

@@ -17,7 +17,7 @@ namespace OpcUa
   namespace Server
   {
 
-    class ServicesRegistry : private Common::Interface
+    class ServicesRegistry : protected Common::Interface
     {
     public:
       DEFINE_CLASS_POINTERS(ServicesRegistry);

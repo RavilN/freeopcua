@@ -28,12 +28,18 @@ namespace OpcUa
 {
   struct RemoteSessionParameters
   {
+    RemoteSessionParameters()
+    {
+      Timeout = 0;
+      MaxResponseMessageSize = 0xFFFFFF;
+    }
     ApplicationDescription ClientDescription;
     std::vector<uint8_t> ClientCertificate;
     std::string SessionName;
     std::string ServerURI;
     std::string EndpointURL;
     Duration Timeout;
+    uint32_t MaxResponseMessageSize;
   };
 
   class Services : virtual public AsyncUaClient, virtual protected Common::Interface

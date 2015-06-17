@@ -190,10 +190,11 @@ namespace
   {
   private:
     typedef std::function<void(std::vector<char>, ResponseHeader)> ResponseCallback;
-    typedef std::map<uint32_t, ResponseCallback> CallbackMap;
+    typedef std::map<uint32_t, std::pair<std::chrono::system_clock::time_point, ResponseCallback>> CallbackMap;
+
 
   public:
-    BinaryClient(std::shared_ptr<IOChannel> channel, const SecureConnectionParams& params, bool debug)
+    BinaryClient(std::shared_ptr<IOChannel> channel, const SecureConnectionParams& params, bool debug, ConnectionStatusChangeCallback callback)
       : Channel(channel)
       , Stream(channel)
       , Params(params)
@@ -203,12 +204,13 @@ namespace
       , Debug(debug)
       , CallbackService(debug)
     {
+      statusChangeCallback = callback;
       //Initialize the worker thread for subscriptions
       callback_thread = std::thread([&](){ CallbackService.Run(); });
 
       HelloServer(params);
 
-      ReceiveThread = std::move(std::thread([this]()
+      ReceiveThread = std::move(std::thread([=]()
       {
         while(!Finished)
         {
@@ -218,10 +220,30 @@ namespace
           }
           catch (const std::exception& exc)
           {
-            if (Debug)
+            if (Finished)
             {
-              std::cerr << "binary_client| CallbackThread : Error receiving data: " << exc.what() << std::endl;
+              statusChangeCallback(ClientConnectionState::Disconnected, OpcUa::StatusCode::Good, "Good");
+              std::cerr << "binary_client | disconnected from Server" << std::endl;
+              break;
             }
+            else
+            {
+              if (Debug)
+              {
+                std::cerr << "binary_client| CallbackThread : Error receiving data: " << exc.what() << std::endl;
+              }
+
+              std::string errorMessage = exc.what();
+              if (errorMessage == "Connection was closed by host.")
+              {
+                statusChangeCallback(ClientConnectionState::ConnectionClosedByServer, OpcUa::StatusCode::BadCommunicationError, exc.what());
+              }
+              else
+              {
+                statusChangeCallback(ClientConnectionState::CommunicationError, OpcUa::StatusCode::BadCommunicationError, exc.what());
+              }
+            }
+            break;
           }
         }
       }));
@@ -241,7 +263,17 @@ namespace
       ReceiveThread.join();
       if (Debug) std::cout << "binary_client| Receive tread stopped." << std::endl;
 
+      std::unique_lock<std::mutex> lock(Mutex);
+      ResponseHeader header;
+      header.ServiceResult = OpcUa::StatusCode::BadSessionClosed;
+      for (CallbackMap::iterator callbackIt = Callbacks.begin(); callbackIt != Callbacks.end(); callbackIt++)
+      {
+        callbackIt->second.second(std::vector<char>(), header);
+      }
+      Callbacks.clear();
+      lock.unlock();
     }
+
 
     ////////////////////////////////////////////////////////////////
     /// Session Services
@@ -266,7 +298,7 @@ namespace
       request.Parameters.ClientNonce = std::vector<uint8_t>(32,0);
       request.Parameters.ClientCertificate = parameters.ClientCertificate;
       request.Parameters.RequestedSessionTimeout = parameters.Timeout;
-      request.Parameters.MaxResponseMessageSize = 65536;
+      request.Parameters.MaxResponseMessageSize = parameters.MaxResponseMessageSize;
       CreateSessionResponse response = Send<CreateSessionResponse>(request);
       AuthenticationToken = response.Session.AuthenticationToken;
       if (Debug)  { std::cout << "binary_client| CreateSession <--" << std::endl; }
@@ -288,7 +320,15 @@ namespace
     {
       if (Debug)  { std::cout << "binary_client| CloseSession -->" << std::endl; }
       CloseSessionRequest request;
-      CloseSessionResponse response = Send<CloseSessionResponse>(request);
+      CloseSessionResponse response;
+      try
+      {
+        response = Send<CloseSessionResponse>(request);
+      }
+      catch (std::exception ex)
+      {
+        response.Header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+      }
       if (Debug)  { std::cout << "binary_client| CloseSession <--" << std::endl; }
       return response;
     }
@@ -514,7 +554,7 @@ namespace
             });
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request.Header.RequestHandle, responseCallback));
+      Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
       lock.unlock();
       Send(request);
       if (Debug) {std::cout << "binary_client| Publish  <--" << std::endl;}
@@ -550,7 +590,6 @@ namespace
       if (Debug)  { std::cout << "binary_client| TranslateBrowsePathsToNodeIds <--" << std::endl; }
       return response.Result.Paths;
     }
-
 
     virtual std::vector<BrowseResult> Browse(const OpcUa::NodesQuery& query) const
     {
@@ -665,41 +704,12 @@ private:
         requestCallback.OnData(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request.Header.RequestHandle, responseCallback));
+      Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
       lock.unlock();
 
       Send(request);
 
       return requestCallback.WaitForData(std::chrono::milliseconds(request.Header.Timeout));
-    }
-
-    virtual std::shared_ptr<AsyncRequestContext<OpcUa::BrowseRequest, OpcUa::BrowseResponse>> beginSend(std::shared_ptr<OpcUa::BrowseRequest> request, std::function<bool(const std::shared_ptr<OpcUa::BrowseRequest>& request, std::shared_ptr<OpcUa::BrowseResponse> response)>callbackArg)
-    {
-      CreateRequestHeader(request->Header);
-      std::shared_ptr<AsyncRequestContext<BrowseRequest, BrowseResponse>> requestContext = std::make_shared<AsyncRequestContext<BrowseRequest, BrowseResponse>>(request, callbackArg);
-      ResponseCallback responseCallback = [=](std::vector<char> buffer, ResponseHeader h){
-        requestContext->OnDataReceived(std::move(buffer), std::move(h));
-      };
-      std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, responseCallback));
-      lock.unlock();
-      Send(*request);
-      return requestContext;
-    }
-
-    virtual std::shared_ptr<AsyncRequestContext<OpcUa::ReadRequest, OpcUa::ReadResponse>> beginSend(std::shared_ptr<OpcUa::ReadRequest> request, std::function<bool(const std::shared_ptr<OpcUa::ReadRequest>& request, std::shared_ptr<OpcUa::ReadResponse> response)>callbackArg)
-    {
-      CreateRequestHeader(request->Header);
-
-      std::shared_ptr<AsyncRequestContext<ReadRequest, ReadResponse>> requestContext = std::make_shared<AsyncRequestContext<ReadRequest, ReadResponse>>(request, callbackArg);
-      ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
-        requestContext->OnDataReceived(std::move(buffer), std::move(h));
-      };
-      std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, responseCallback));
-      lock.unlock();
-      Send(*request);
-      return requestContext;
     }
 
     template <typename Request>
@@ -717,7 +727,34 @@ private:
       Stream << hdr << algorithmHeader << sequence << request << flush;
     }
 
-    
+    virtual std::shared_ptr<AsyncRequestContext<OpcUa::BrowseRequest, OpcUa::BrowseResponse>> beginSend(std::shared_ptr<OpcUa::BrowseRequest> request, std::function<bool(const std::shared_ptr<OpcUa::BrowseRequest>& request, std::shared_ptr<OpcUa::BrowseResponse> response)>callbackArg)
+    {
+      CreateRequestHeader(request->Header);
+      std::shared_ptr<AsyncRequestContext<BrowseRequest, BrowseResponse>> requestContext = std::make_shared<AsyncRequestContext<BrowseRequest, BrowseResponse>>(request, callbackArg);
+      ResponseCallback responseCallback = [=](std::vector<char> buffer, ResponseHeader h){
+        requestContext->OnDataReceived(std::move(buffer), std::move(h));
+      };
+      std::unique_lock<std::mutex> lock(Mutex);
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      lock.unlock();
+      Send(*request);
+      return requestContext;
+    }
+
+    virtual std::shared_ptr<AsyncRequestContext<OpcUa::ReadRequest, OpcUa::ReadResponse>> beginSend(std::shared_ptr<OpcUa::ReadRequest> request, std::function<bool(const std::shared_ptr<OpcUa::ReadRequest>& request, std::shared_ptr<OpcUa::ReadResponse> response)>callbackArg)
+    {
+      CreateRequestHeader(request->Header);
+
+      std::shared_ptr<AsyncRequestContext<ReadRequest, ReadResponse>> requestContext = std::make_shared<AsyncRequestContext<ReadRequest, ReadResponse>>(request, callbackArg);
+      ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
+        requestContext->OnDataReceived(std::move(buffer), std::move(h));
+      };
+      std::unique_lock<std::mutex> lock(Mutex);
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      lock.unlock();
+      Send(*request);
+      return requestContext;
+    }
 
     void Receive() const
     {
@@ -790,7 +827,7 @@ private:
       }
       else
       {
-        callbackIt->second(std::move(buffer), std::move(header));
+        callbackIt->second.second(std::move(buffer), std::move(header));
         Callbacks.erase(callbackIt);
       }
       lock.unlock();
@@ -801,9 +838,9 @@ private:
       if (Debug) {std::cout << "binary_client| HelloServer -->" << std::endl;}
       Binary::Hello hello;
       hello.ProtocolVersion = 0;
-      hello.ReceiveBufferSize = 65536;
-      hello.SendBufferSize = 65536;
-      hello.MaxMessageSize = 65536;
+      hello.ReceiveBufferSize = 0xFFFFFF;
+      hello.SendBufferSize = 0xFFFFFF;
+      hello.MaxMessageSize = 0xFFFFFF;
       hello.MaxChunkCount = 256;
       hello.EndpointUrl = params.EndpointUrl;
 
@@ -864,13 +901,17 @@ private:
     mutable std::atomic<uint32_t> RequestHandle;
     mutable std::vector<std::vector<uint8_t>> ContinuationPoints;
     mutable CallbackMap Callbacks;
+
+    std::chrono::system_clock::time_point LastMessageReceivedTime;
+    std::chrono::system_clock::time_point LastCallbacksCleanTime;
+
     const bool Debug = true;
     std::atomic<bool> Finished = false;
 
     std::thread callback_thread;
     CallbackThread CallbackService;
     mutable std::mutex Mutex;
-
+    ConnectionStatusChangeCallback statusChangeCallback;
   };
 
   template <>
@@ -890,18 +931,25 @@ private:
   }
 } // namespace
 
-OpcUa::Services::SharedPtr OpcUa::CreateBinaryClient(OpcUa::IOChannel::SharedPtr channel, const OpcUa::SecureConnectionParams& params, bool debug)
+OpcUa::Services::SharedPtr OpcUa::CreateBinaryClient(OpcUa::IOChannel::SharedPtr channel, const OpcUa::SecureConnectionParams& params, bool debug, ConnectionStatusChangeCallback callback)
 {
-  return std::make_shared<BinaryClient>(channel, params, debug);
+  return std::make_shared<BinaryClient>(channel, params, debug, callback);
 }
 
-OpcUa::Services::SharedPtr OpcUa::CreateBinaryClient(const std::string& endpointUrl, bool debug)
+OpcUa::Services::SharedPtr OpcUa::CreateBinaryClient(const std::string& endpointUrl, bool debug, ConnectionStatusChangeCallback callback)
 {
   const Common::Uri serverUri(endpointUrl);
   OpcUa::IOChannel::SharedPtr channel = OpcUa::Connect(serverUri.Host(), serverUri.Port());
   OpcUa::SecureConnectionParams params;
   params.EndpointUrl = endpointUrl;
   params.SecurePolicy = "http://opcfoundation.org/UA/SecurityPolicy#None";
-  return CreateBinaryClient(channel, params, debug);
+  return CreateBinaryClient(channel, params, debug, callback);
 }
 
+namespace OpcUa
+{
+  ConnectionStatusChangeCallback OpcUa::defaultCallback = [](ClientConnectionState state, OpcUa::StatusCode statusCode, const std::string& errorMessage)
+  {
+    return 1000; 
+  };
+}

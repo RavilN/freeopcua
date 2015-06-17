@@ -451,7 +451,7 @@ namespace OpcUa
           response.Session.SessionId = SessionId;
           response.Session.AuthenticationToken = SessionId;
           response.Session.RevisedSessionTimeout = params.RequestedSessionTimeout;
-          response.Session.MaxRequestMessageSize = 65536;
+          response.Session.MaxRequestMessageSize = 0xFFFFFF;
           EndpointsFilter epf;
           response.Session.ServerEndpoints = Server->Endpoints()->GetEndpoints(epf);
 
@@ -718,7 +718,7 @@ namespace OpcUa
           response.Session.SessionId = SessionId;
           response.Session.AuthenticationToken = SessionId;
           response.Session.RevisedSessionTimeout = params.RequestedSessionTimeout;
-          response.Session.MaxRequestMessageSize = 65536;
+          response.Session.MaxRequestMessageSize = 0xFFFFFF;
           EndpointsFilter epf;
           response.Session.ServerEndpoints = Server->Endpoints()->GetEndpoints(epf);
 

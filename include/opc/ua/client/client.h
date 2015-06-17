@@ -34,7 +34,6 @@
 
 namespace OpcUa
 {
-
   class KeepAliveThread
   {
     public:
@@ -57,6 +56,8 @@ namespace OpcUa
       bool Debug = false;
   };
 
+  typedef std::function<uint32_t(ClientConnectionState state, OpcUa::StatusCode statusCode, const std::string& errorMessage)> UaClientStateChangeCallback;
+  extern UaClientStateChangeCallback defaultUaClientCallback;
 
   class UaClient
   {
@@ -70,7 +71,7 @@ namespace OpcUa
     /// opc.tcp://localhost:4841/opcua/server
     /// opc.tcp://192.168.1.1:4840/opcua/server
     /// opc.tcp://server.freeopca.org:4841/opcua/server
-    UaClient(bool debug=false) :  KeepAlive(debug), Debug(debug) {}
+    UaClient(bool debug = false, UaClientStateChangeCallback callback = defaultUaClientCallback);
     ~UaClient(); 
 
     UaClient(const UaClient&&) = delete;
@@ -144,6 +145,7 @@ namespace OpcUa
   private:
     void OpenSecureChannel();
     void CloseSecureChannel();
+    uint32_t LowLevelStatusChangeCallbackHandler(ClientConnectionState state, OpcUa::StatusCode statusCode, const std::string& errorMessage);
 
     EndpointDescription Endpoint;
     // defined some sensible defaults that should let us connect to most servers
@@ -155,7 +157,7 @@ namespace OpcUa
     uint32_t SecureChannelId;
     bool Debug = false; 
     uint32_t DefaultTimeout = 3600000;
-
+    UaClientStateChangeCallback uaClientStateChangeCallback;
   protected:
     Services::SharedPtr Server;
 

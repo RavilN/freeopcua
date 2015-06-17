@@ -18,7 +18,23 @@
 
 namespace OpcUa
 {
+    enum ClientConnectionState
+    {
+      Disconnected = 0, // Initial state
+      Connecting,       // 
+      CouldNotConnect,  // Connection attempt failed
+      Reconnecting,     // Auto-reconnection attempt started
+      Connected,        // Successfully connected
+      ConnectionClosedByServer,
+      CommunicationError,  // Communication error happened. 
+    };
 
+    // This function will be called whenever connection/disconnection process is started and finished or state is changed.
+    // Returned value is used to indicate need on retries (for connection attempt and in case of detecting of communication error):
+    // If not 0, it is the time interval, after which connect attempt should be performed.
+    typedef std::function<uint32_t(ClientConnectionState state, OpcUa::StatusCode statusCode, const std::string& errorMessage)> ConnectionStatusChangeCallback;
+
+    extern ConnectionStatusChangeCallback defaultCallback;
     struct SecureConnectionParams
     {
       std::string EndpointUrl;
@@ -34,8 +50,8 @@ namespace OpcUa
     };
 
     /// @brief Create server based on opc ua binary protocol.
-    /// @param channel channel wich will be used for sending requests data.
-    Services::SharedPtr CreateBinaryClient(IOChannel::SharedPtr channel, const SecureConnectionParams& params, bool debug = false);
-    Services::SharedPtr CreateBinaryClient(const std::string& endpointUrl, bool debug = false);
+    /// @param channel channel which will be used for sending requests data.
+    Services::SharedPtr CreateBinaryClient(IOChannel::SharedPtr channel, const SecureConnectionParams& params, bool debug = false, ConnectionStatusChangeCallback callback = defaultCallback);
+    Services::SharedPtr CreateBinaryClient(const std::string& endpointUrl, bool debug = false, ConnectionStatusChangeCallback callback = defaultCallback);
 
 } // namespace OpcUa

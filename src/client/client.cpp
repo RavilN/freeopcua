@@ -28,6 +28,7 @@
 
 namespace OpcUa
 {
+  UaClientStateChangeCallback defaultUaClientCallback = [](ClientConnectionState state, OpcUa::StatusCode statusCode, const std::string& errorMessage){return 1000; };
 
   void KeepAliveThread::Start(Services::SharedPtr server, Node node, Duration period)
   {
@@ -189,7 +190,7 @@ namespace OpcUa
     params.EndpointUrl = Endpoint.EndpointURL;
     params.SecurePolicy = "http://opcfoundation.org/UA/SecurityPolicy#None";
 
-    Server = OpcUa::CreateBinaryClient(channel, params, Debug);
+    Server = OpcUa::CreateBinaryClient(channel, params, Debug, uaClientStateChangeCallback);
 
     OpenSecureChannel();
 
@@ -204,6 +205,7 @@ namespace OpcUa
     session.EndpointURL = endpoint.EndpointURL;
     session.Timeout = DefaultTimeout;
     session.ServerURI = endpoint.ServerDescription.URI;
+    session.MaxResponseMessageSize = 0xFFFFFF; // About 16 Mb
 
     CreateSessionResponse response = Server->CreateSession(session);
     CheckStatusCode(response.Header.ServiceResult);
@@ -277,9 +279,13 @@ namespace OpcUa
       Server->CloseSecureChannel(SecureChannelId);
   }
 
+  UaClient::UaClient(bool debug, UaClientStateChangeCallback callback) : KeepAlive(debug), Debug(debug)
+  {
+    uaClientStateChangeCallback = callback;
+  }
   UaClient::~UaClient()
   {
-    Disconnect();//Do not leave any thread or connectino running
+    Disconnect();//Do not leave any thread or connection running
   } 
 
   void UaClient::Disconnect()
@@ -360,6 +366,12 @@ namespace OpcUa
   std::shared_ptr<AsyncUaClient> UaClient::GetAsyncClient()
   {
     return Server->GetAsyncClient();
+  }
+
+  uint32_t UaClient::LowLevelStatusChangeCallbackHandler(ClientConnectionState state, OpcUa::StatusCode statusCode, const std::string& errorMessage)
+  {
+    uint32_t retryIn = uaClientStateChangeCallback(state, statusCode, errorMessage);
+    return retryIn;
   }
 
 } // namespace OpcUa

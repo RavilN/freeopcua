@@ -45,9 +45,23 @@ namespace OpcUa
 
     for (uint32_t i = 0; i < size; ++i)
     {
-      typename Container::value_type val;
-      in.Deserialize(val);
-      c.push_back(val);
+      if (i >= 719)
+      {
+        int y = 0;
+        y++;
+      }
+
+      try
+      {
+        typename Container::value_type val;
+        in.Deserialize(val);
+        c.push_back(val);
+      }
+      catch (std::exception ex)
+      {
+        std::string s = ex.what();
+        throw ex;
+      }
     }
   }
 }

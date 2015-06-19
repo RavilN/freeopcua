@@ -32,6 +32,15 @@ namespace OpcUa
 
   void KeepAliveThread::Start(Services::SharedPtr server, Node node, Duration period)
   {
+    if (Running)
+    {
+      Stop();
+    }
+    if (Server.get() != 0)
+    {
+      int i = 0;
+      i++;
+    }
     Server = server;
     NodeToRead = node;
     Period = period;
@@ -39,7 +48,6 @@ namespace OpcUa
     StopRequest = false;
     Thread = std::thread([this] { this->Run(); });
   }
-
 
   void KeepAliveThread::Run()
   {
@@ -102,6 +110,9 @@ namespace OpcUa
         std::cout << "KeepAliveThread | Not running" << std::endl;
       }
     }
+    //Release references to the binary_client, so it can clear its resources:
+    Server.reset();
+    NodeToRead = Node();
   }
 
   std::vector<EndpointDescription> UaClient::GetServerEndpoints(const std::string& endpoint)
@@ -115,13 +126,20 @@ namespace OpcUa
 
     Server = OpcUa::CreateBinaryClient(channel, params, Debug);
 
-    OpenSecureChannel();
-    std::vector<EndpointDescription> endpoints = UaClient::GetServerEndpoints();
-    CloseSecureChannel();
+    try
+    {
+      OpenSecureChannel();
+      std::vector<EndpointDescription> endpoints = UaClient::GetServerEndpoints();
+      CloseSecureChannel();    
+      Server.reset(); //close channel
 
-    Server.reset(); //close channel
-
-    return endpoints;
+      return endpoints;
+    }
+    catch (std::exception ex)
+    {
+      Server.reset();
+      throw ex;
+    }
   }
 
   std::vector<EndpointDescription> UaClient::GetServerEndpoints()
@@ -176,83 +194,91 @@ namespace OpcUa
   void UaClient::Connect(const std::string& endpoint)
   {
     EndpointDescription endpointdesc = SelectEndpoint(endpoint);
-    endpointdesc.EndpointURL = endpoint; //force the use of the enpoint the user wants, seems like servers often send wrong hostname
+    endpointdesc.EndpointURL = endpoint; //force the use of the endpoint the user wants, seems like servers often send wrong hostname
     Connect(endpointdesc);
   }
    
   void UaClient::Connect(const EndpointDescription& endpoint)
   {
-    Endpoint = endpoint;
-    const Common::Uri serverUri(Endpoint.EndpointURL);
-    OpcUa::IOChannel::SharedPtr channel = OpcUa::Connect(serverUri.Host(), serverUri.Port());
-
-    OpcUa::SecureConnectionParams params;
-    params.EndpointUrl = Endpoint.EndpointURL;
-    params.SecurePolicy = "http://opcfoundation.org/UA/SecurityPolicy#None";
-
-    Server = OpcUa::CreateBinaryClient(channel, params, Debug, uaClientStateChangeCallback);
-
-    OpenSecureChannel();
-
-
-    if (Debug)  { std::cout << "UaClient | Creating session ..." <<  std::endl; }
-    OpcUa::RemoteSessionParameters session;
-    session.ClientDescription.URI = ApplicationUri;
-    session.ClientDescription.ProductURI = ProductUri;
-    session.ClientDescription.Name = LocalizedText(SessionName);
-    session.ClientDescription.Type = OpcUa::ApplicationType::Client;
-    session.SessionName = SessionName;
-    session.EndpointURL = endpoint.EndpointURL;
-    session.Timeout = DefaultTimeout;
-    session.ServerURI = endpoint.ServerDescription.URI;
-    session.MaxResponseMessageSize = 0xFFFFFF; // About 16 Mb
-
-    CreateSessionResponse response = Server->CreateSession(session);
-    CheckStatusCode(response.Header.ServiceResult);
-    if (Debug)  { std::cout << "UaClient | Create session OK" <<  std::endl; }
-
-    if (Debug)  { std::cout << "UaClient | Activating session ..." <<  std::endl; }
-    UpdatedSessionParameters session_parameters;
+    // Make sure that the connection channel is closed if some exception is thrown at any stage
+    try
     {
-      //const SessionData &session_data = response.Session;
-      Common::Uri uri(session.EndpointURL);
-      std::string user = uri.User();
-      std::string password = uri.Password();
-      bool user_identify_token_found = false;
-      for(auto ep : response.Session.ServerEndpoints) {
-        if(ep.SecurityMode == MessageSecurityMode::None) {
-          for(auto token : ep.UserIdentifyTokens) {
-            if(user.empty()) {
-              if(token.TokenType == UserIdentifyTokenType::ANONYMOUS) {
-                session_parameters.IdentifyToken.setPolicyId(token.PolicyId);
-                user_identify_token_found = true;
-                break;
+      Endpoint = endpoint;
+      const Common::Uri serverUri(Endpoint.EndpointURL);
+      OpcUa::IOChannel::SharedPtr channel = OpcUa::Connect(serverUri.Host(), serverUri.Port());
+
+      OpcUa::SecureConnectionParams params;
+      params.EndpointUrl = Endpoint.EndpointURL;
+      params.SecurePolicy = "http://opcfoundation.org/UA/SecurityPolicy#None";
+
+      Server = OpcUa::CreateBinaryClient(channel, params, Debug, uaClientStateChangeCallback);
+      OpenSecureChannel();
+
+      if (Debug)  { std::cout << "UaClient | Creating session ..." << std::endl; }
+      OpcUa::RemoteSessionParameters session;
+      session.ClientDescription.URI = ApplicationUri;
+      session.ClientDescription.ProductURI = ProductUri;
+      session.ClientDescription.Name = LocalizedText(SessionName);
+      session.ClientDescription.Type = OpcUa::ApplicationType::Client;
+      session.SessionName = SessionName;
+      session.EndpointURL = endpoint.EndpointURL;
+      session.Timeout = DefaultTimeout;
+      session.ServerURI = endpoint.ServerDescription.URI;
+      session.MaxResponseMessageSize = 0xFFFFFF; // About 16 Mb
+
+      CreateSessionResponse response = Server->CreateSession(session);
+      CheckStatusCode(response.Header.ServiceResult);
+      if (Debug)  { std::cout << "UaClient | Create session OK" << std::endl; }
+
+      if (Debug)  { std::cout << "UaClient | Activating session ..." << std::endl; }
+      UpdatedSessionParameters session_parameters;
+      {
+        //const SessionData &session_data = response.Session;
+        Common::Uri uri(session.EndpointURL);
+        std::string user = uri.User();
+        std::string password = uri.Password();
+        bool user_identify_token_found = false;
+        for (auto ep : response.Session.ServerEndpoints) {
+          if (ep.SecurityMode == MessageSecurityMode::None) {
+            for (auto token : ep.UserIdentifyTokens) {
+              if (user.empty()) {
+                if (token.TokenType == UserIdentifyTokenType::ANONYMOUS) {
+                  session_parameters.IdentifyToken.setPolicyId(token.PolicyId);
+                  user_identify_token_found = true;
+                  break;
+                }
               }
-            }
-            else {
-              if(token.TokenType == UserIdentifyTokenType::USERNAME) {
-                session_parameters.IdentifyToken.setPolicyId(token.PolicyId);
-                session_parameters.IdentifyToken.setUser(user, password);
-                user_identify_token_found = true;
-                break;
+              else {
+                if (token.TokenType == UserIdentifyTokenType::USERNAME) {
+                  session_parameters.IdentifyToken.setPolicyId(token.PolicyId);
+                  session_parameters.IdentifyToken.setUser(user, password);
+                  user_identify_token_found = true;
+                  break;
+                }
               }
             }
           }
         }
+        if (!user_identify_token_found) {
+          throw std::runtime_error("Cannot find suitable user identify token for session");
+        }
       }
-      if(!user_identify_token_found) {
-        throw std::runtime_error("Cannot find suitable user identify token for session");
-      }
-    }
-    ActivateSessionResponse aresponse = Server->ActivateSession(session_parameters);
-    CheckStatusCode(aresponse.Header.ServiceResult);
-    if (Debug)  { std::cout << "UaClient | Activate session OK" <<  std::endl; }
+      ActivateSessionResponse aresponse = Server->ActivateSession(session_parameters);
+      CheckStatusCode(aresponse.Header.ServiceResult);
+      if (Debug)  { std::cout << "UaClient | Activate session OK" << std::endl; }
 
-    if (response.Session.RevisedSessionTimeout > 0 && response.Session.RevisedSessionTimeout < DefaultTimeout  )
-    {
-      DefaultTimeout = response.Session.RevisedSessionTimeout;
+      if (response.Session.RevisedSessionTimeout > 0 && response.Session.RevisedSessionTimeout < DefaultTimeout)
+      {
+        DefaultTimeout = response.Session.RevisedSessionTimeout;
+      }
+      KeepAlive.Start(Server, Node(Server, ObjectId::Server_ServerStatus_State), DefaultTimeout);
     }
-    KeepAlive.Start(Server, Node(Server, ObjectId::Server_ServerStatus_State), DefaultTimeout);
+    catch (std::exception ex)
+    {
+      Server.reset();
+      KeepAlive.Stop();
+      throw ex;
+    }
   }
 
   void UaClient::OpenSecureChannel()
@@ -292,11 +318,21 @@ namespace OpcUa
   {
     KeepAlive.Stop();
 
-    if (  Server ) 
+    try
     {
-      CloseSessionResponse response = Server->CloseSession();
-      if (Debug) { std::cout << "CloseSession response is " << ToString(response.Header.ServiceResult) << std::endl; }
-      CloseSecureChannel();
+      if (Server)
+      {
+        CloseSessionResponse response = Server->CloseSession();
+        if (Debug) { std::cout << "CloseSession response is " << ToString(response.Header.ServiceResult) << std::endl; }
+        CloseSecureChannel();
+      }
+    }
+    catch (std::exception ex)
+    {
+      if (Debug) 
+      {
+        std::cout << "UaClient | exception thrown on disconnect: " << ex.what() << std::endl;
+      }
     }
     Server.reset(); //FIXME: check if we still need this
   }

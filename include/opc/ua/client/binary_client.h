@@ -25,8 +25,10 @@ namespace OpcUa
       CouldNotConnect,  // Connection attempt failed
       Reconnecting,     // Auto-reconnection attempt started
       Connected,        // Successfully connected
+      Reconnected,
       ConnectionClosedByServer,
       CommunicationError,  // Communication error happened. 
+      Disconnecting
     };
 
     // This function will be called whenever connection/disconnection process is started and finished or state is changed.

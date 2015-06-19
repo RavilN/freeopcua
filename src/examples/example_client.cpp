@@ -32,9 +32,9 @@ int main(int argc, char** argv)
 	{
 		//std::string endpoint = "opc.tcp://192.168.56.101:48030";
 		//std::string endpoint = "opc.tcp://user:password@192.168.56.101:48030";
-		std::string endpoint = "opc.tcp://127.0.0.1:4841/freeopcua/server/";
+		//std::string endpoint = "opc.tcp://127.0.0.1:4841/freeopcua/server/";
 		//std::string endpoint = "opc.tcp://localhost:53530/OPCUA/SimulationServer/";
-		//std::string endpoint = "opc.tcp://localhost:48010";
+		std::string endpoint = "opc.tcp://localhost:48010";
 
 		if (argc > 1)
 			endpoint = argv[1];

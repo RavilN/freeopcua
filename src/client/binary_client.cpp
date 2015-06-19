@@ -84,6 +84,10 @@ namespace
       : lock(m)
     {
     }
+    ~RequestCallback()
+    {
+
+    }
 
     void OnData(std::vector<char> data, ResponseHeader h)
     {
@@ -205,6 +209,8 @@ namespace
       , CallbackService(debug)
     {
       statusChangeCallback = callback;
+      ConnectionState = ClientConnectionState::Disconnected;
+      //statusChangeCallback(ConnectionState, OpcUa::StatusCode::Good, "Initial state - disconnected");
       //Initialize the worker thread for subscriptions
       callback_thread = std::thread([&](){ CallbackService.Run(); });
 
@@ -222,7 +228,6 @@ namespace
           {
             if (Finished)
             {
-              statusChangeCallback(ClientConnectionState::Disconnected, OpcUa::StatusCode::Good, "Good");
               std::cerr << "binary_client | disconnected from Server" << std::endl;
               break;
             }
@@ -231,16 +236,6 @@ namespace
               if (Debug)
               {
                 std::cerr << "binary_client| CallbackThread : Error receiving data: " << exc.what() << std::endl;
-              }
-
-              std::string errorMessage = exc.what();
-              if (errorMessage == "Connection was closed by host.")
-              {
-                statusChangeCallback(ClientConnectionState::ConnectionClosedByServer, OpcUa::StatusCode::BadCommunicationError, exc.what());
-              }
-              else
-              {
-                statusChangeCallback(ClientConnectionState::CommunicationError, OpcUa::StatusCode::BadCommunicationError, exc.what());
               }
             }
             break;
@@ -251,27 +246,33 @@ namespace
 
     ~BinaryClient()
     {
+      ConnectionState = ClientConnectionState::Disconnecting;
       Finished = true;
-
+      
       if (Debug) std::cout << "binary_client| Stopping callback thread." << std::endl;
       CallbackService.Stop();
       if (Debug) std::cout << "binary_client| Joining service thread." << std::endl;
       callback_thread.join(); //Not sure it is necessary
-
+      
+      if (Debug) std::cout << "binary_client| Stopping channel." << std::endl;
       Channel->Stop();
+
       if (Debug) std::cout << "binary_client| Joining receive thread." << std::endl;
       ReceiveThread.join();
       if (Debug) std::cout << "binary_client| Receive tread stopped." << std::endl;
 
+      if (Debug) std::cout << "binary_client| Cleaning callbacks queue" << std::endl;
       std::unique_lock<std::mutex> lock(Mutex);
       ResponseHeader header;
       header.ServiceResult = OpcUa::StatusCode::BadSessionClosed;
       for (CallbackMap::iterator callbackIt = Callbacks.begin(); callbackIt != Callbacks.end(); callbackIt++)
       {
+        header.RequestHandle = callbackIt->first;
         callbackIt->second.second(std::vector<char>(), header);
       }
       Callbacks.clear();
       lock.unlock();
+      if (Debug) std::cout << "binary_client| deleted." << std::endl;
     }
 
 
@@ -280,6 +281,8 @@ namespace
     ////////////////////////////////////////////////////////////////
     virtual CreateSessionResponse CreateSession(const RemoteSessionParameters& parameters)
     {
+      ConnectionState = ClientConnectionState::Connecting;
+      //statusChangeCallback(ConnectionState, OpcUa::StatusCode::Good, "");
       if (Debug)  { std::cout << "binary_client| CreateSession -->" << std::endl; }
       CreateSessionRequest request;
       CreateRequestHeader(request.Header);
@@ -307,29 +310,37 @@ namespace
 
     ActivateSessionResponse ActivateSession(const UpdatedSessionParameters &session_parameters) override
     {
+      ClientConnectionState previousState = ConnectionState;
       if (Debug)  { std::cout << "binary_client| ActivateSession -->" << std::endl; }
       ActivateSessionRequest request;
       request.Parameters = session_parameters;
       request.Parameters.LocaleIds.push_back("en");
       ActivateSessionResponse response = Send<ActivateSessionResponse>(request);
       if (Debug)  { std::cout << "binary_client| ActivateSession <--" << std::endl; }
+
+      if (previousState == ClientConnectionState::Reconnecting)
+      {
+        ConnectionState = ClientConnectionState::Reconnected;
+      }
+      else
+      { 
+        ConnectionState = ClientConnectionState::Connected;
+      }
+      //statusChangeCallback(ConnectionState, response.Header.ServiceResult, "");
       return response;
     }
 
     virtual CloseSessionResponse CloseSession()
     {
+      ConnectionState = ClientConnectionState::Disconnecting;
+      //statusChangeCallback(ConnectionState, StatusCode::Good, "");
       if (Debug)  { std::cout << "binary_client| CloseSession -->" << std::endl; }
       CloseSessionRequest request;
       CloseSessionResponse response;
-      try
-      {
-        response = Send<CloseSessionResponse>(request);
-      }
-      catch (std::exception ex)
-      {
-        response.Header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
-      }
+      response = Send<CloseSessionResponse>(request);
       if (Debug)  { std::cout << "binary_client| CloseSession <--" << std::endl; }
+      ConnectionState = ClientConnectionState::Disconnected;
+      //statusChangeCallback(ConnectionState, StatusCode::Good, "");
       return response;
     }
 
@@ -699,9 +710,9 @@ private:
     {
       CreateRequestHeader(request.Header);
 
-      RequestCallback<Response> requestCallback;
-      ResponseCallback responseCallback = [&requestCallback](std::vector<char> buffer, ResponseHeader h){
-        requestCallback.OnData(std::move(buffer), std::move(h));
+      std::shared_ptr<RequestCallback<Response>> requestCallback(new RequestCallback<Response>());
+      ResponseCallback responseCallback = [requestCallback](std::vector<char> buffer, ResponseHeader h){
+        requestCallback->OnData(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
       Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
@@ -709,7 +720,7 @@ private:
 
       Send(request);
 
-      return requestCallback.WaitForData(std::chrono::milliseconds(request.Header.Timeout));
+      return requestCallback->WaitForData(std::chrono::milliseconds(request.Header.Timeout));
     }
 
     template <typename Request>
@@ -724,7 +735,31 @@ private:
       hdr.AddSize(RawSize(sequence));
       hdr.AddSize(RawSize(request));
 
-      Stream << hdr << algorithmHeader << sequence << request << flush;
+      try
+      {
+        Stream << hdr << algorithmHeader << sequence << request << flush;
+      }
+      catch (std::exception ex)
+      {
+        switch (ConnectionState)
+        {
+          case ClientConnectionState::Connecting:
+          case ClientConnectionState::Reconnecting:
+            ConnectionState = ClientConnectionState::CouldNotConnect;
+            //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
+            break;
+          case ClientConnectionState::Disconnecting:
+            ConnectionState = ClientConnectionState::Disconnected;
+            //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
+            break;
+          case ClientConnectionState::Connected:
+          case ClientConnectionState::Reconnected:
+            ConnectionState = ClientConnectionState::CommunicationError;
+            //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
+            break;
+        }
+        throw ex;
+      }
     }
 
     virtual std::shared_ptr<AsyncRequestContext<OpcUa::BrowseRequest, OpcUa::BrowseResponse>> beginSend(std::shared_ptr<OpcUa::BrowseRequest> request, std::function<bool(const std::shared_ptr<OpcUa::BrowseRequest>& request, std::shared_ptr<OpcUa::BrowseResponse> response)>callbackArg)
@@ -758,66 +793,102 @@ private:
 
     void Receive() const
     {
-      Binary::SecureHeader responseHeader;
-      Stream >> responseHeader;
-      
-      size_t algo_size;
-      if (responseHeader.Type == MessageType::MT_SECURE_OPEN )
-      {
-        AsymmetricAlgorithmHeader responseAlgo;
-        Stream >> responseAlgo;
-        algo_size = RawSize(responseAlgo);
-      }
-      else if (responseHeader.Type == MessageType::MT_ERROR )
-      {
-        StatusCode error;
-        std::string msg;
-        Stream >> error;
-        Stream >> msg;
-        std::stringstream stream;
-        stream << "Received error message from server: " << ToString(error) << ", " << msg ;
-        throw std::runtime_error(stream.str());
-      }
-      else //(responseHeader.Type == MessageType::MT_SECURE_MESSAGE )
-      {
-        Binary::SymmetricAlgorithmHeader responseAlgo;
-        Stream >> responseAlgo;
-        algo_size = RawSize(responseAlgo);
-      }
-
-      Binary::SequenceHeader responseSequence;
-      Stream >> responseSequence; // TODO Check for request Number
-
-      const std::size_t expectedHeaderSize = RawSize(responseHeader) + algo_size + RawSize(responseSequence);
-      if (expectedHeaderSize >= responseHeader.Size)
-      {
-        std::stringstream stream;
-        stream << "Size of received message " << responseHeader.Size << " bytes is invalid. Expected size " << expectedHeaderSize << " bytes";
-        throw std::runtime_error(stream.str());
-      }
-
-      const std::size_t dataSize = responseHeader.Size - expectedHeaderSize;
-      std::vector<char> buffer(dataSize);
-      BufferInputChannel bufferInput(buffer);
-      Binary::RawBuffer raw(&buffer[0], dataSize);
-      Stream >> raw;
-
-      IStreamBinary in(bufferInput);
-      NodeId id;
-      in >> id;
       ResponseHeader header;
-      in >> header;
-      if ( Debug )std::cout << "binary_client| Got response id: " << id << " and handle " << header.RequestHandle<< std::endl;
-
-      if (header.ServiceResult != StatusCode::Good) {
-        std::cout << "binary_client| Received a response from server with error status: " << OpcUa::ToString(header.ServiceResult) <<  std::endl;
-      }
-
-      if (id == SERVICE_FAULT) 
+      std::vector<char> buffer;
+      NodeId id;
+      try
       {
-        std::cerr << std::endl;
-        std::cerr << "Receive ServiceFault from Server with StatusCode " << OpcUa::ToString(header.ServiceResult) << std::endl;
-        std::cerr << std::endl;
+        Binary::SecureHeader responseHeader;
+        Stream >> responseHeader;
+
+        size_t algo_size;
+        if (responseHeader.Type == MessageType::MT_SECURE_OPEN)
+        {
+          AsymmetricAlgorithmHeader responseAlgo;
+          Stream >> responseAlgo;
+          algo_size = RawSize(responseAlgo);
+        }
+        else if (responseHeader.Type == MessageType::MT_ERROR)
+        {
+          StatusCode error;
+          std::string msg;
+          Stream >> error;
+          Stream >> msg;
+          std::stringstream stream;
+          stream << "Received error message from server: " << ToString(error) << ", " << msg;
+          throw std::runtime_error(stream.str());
+        }
+        else //(responseHeader.Type == MessageType::MT_SECURE_MESSAGE )
+        {
+          Binary::SymmetricAlgorithmHeader responseAlgo;
+          Stream >> responseAlgo;
+          algo_size = RawSize(responseAlgo);
+        }
+
+        Binary::SequenceHeader responseSequence;
+        Stream >> responseSequence; // TODO Check for request Number
+
+        const std::size_t expectedHeaderSize = RawSize(responseHeader) + algo_size + RawSize(responseSequence);
+        if (expectedHeaderSize >= responseHeader.Size)
+        {
+          std::stringstream stream;
+          stream << "Size of received message " << responseHeader.Size << " bytes is invalid. Expected size " << expectedHeaderSize << " bytes";
+          throw std::runtime_error(stream.str());
+        }
+
+        const std::size_t dataSize = responseHeader.Size - expectedHeaderSize;
+        buffer.resize(dataSize);
+        BufferInputChannel bufferInput(buffer);
+        Binary::RawBuffer raw(&buffer[0], dataSize);
+        Stream >> raw;
+
+        IStreamBinary in(bufferInput);
+
+        in >> id;
+        in >> header;
+        if (Debug)std::cout << "binary_client| Got response id: " << id << " and handle " << header.RequestHandle << std::endl;
+
+        if (header.ServiceResult != StatusCode::Good) {
+          std::cout << "binary_client| Received a response from server with error status: " << OpcUa::ToString(header.ServiceResult) << std::endl;
+        }
+
+        if (id == SERVICE_FAULT)
+        {
+          std::cerr << std::endl;
+          std::cerr << "Receive ServiceFault from Server with StatusCode " << OpcUa::ToString(header.ServiceResult) << std::endl;
+          std::cerr << std::endl;
+        }
+      }
+      catch (std::exception ex)
+      {
+        switch (ConnectionState)
+        {
+        case ClientConnectionState::Connecting:
+        case ClientConnectionState::Reconnecting:
+          ConnectionState = ClientConnectionState::CouldNotConnect;
+          //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
+          break;
+        case ClientConnectionState::Disconnecting:
+          ConnectionState = ClientConnectionState::Disconnected;
+          //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
+          break;
+        case ClientConnectionState::Connected:
+        case ClientConnectionState::Reconnected:
+          {
+            std::string errorMessage = ex.what();
+            if (errorMessage == "Connection was closed by host.")
+            {
+              ConnectionState = ClientConnectionState::ConnectionClosedByServer;
+            }
+            else
+            {
+              ConnectionState = ClientConnectionState::CommunicationError;
+            }
+            statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, errorMessage);
+          }
+          break;
+        }
+        throw ex;
       }
       std::unique_lock<std::mutex> lock(Mutex);
       CallbackMap::const_iterator callbackIt = Callbacks.find(header.RequestHandle);
@@ -827,6 +898,7 @@ private:
       }
       else
       {
+        // TODO - Probably it is better to call function outside of the lock
         callbackIt->second.second(std::move(buffer), std::move(header));
         Callbacks.erase(callbackIt);
       }
@@ -912,6 +984,7 @@ private:
     CallbackThread CallbackService;
     mutable std::mutex Mutex;
     ConnectionStatusChangeCallback statusChangeCallback;
+    mutable std::atomic<ClientConnectionState> ConnectionState;
   };
 
   template <>

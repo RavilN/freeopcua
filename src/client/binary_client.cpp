@@ -718,7 +718,17 @@ private:
       Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
       lock.unlock();
 
-      Send(request);
+      // Prevent sending messages via socket from different threads simultaneously
+      ioSendMutex.lock();
+      try
+      {
+        Send(request);
+      }
+      catch (...)
+      {
+
+      }
+      ioSendMutex.unlock();
 
       return requestCallback->WaitForData(std::chrono::milliseconds(request.Header.Timeout));
     }
@@ -983,6 +993,7 @@ private:
     std::thread callback_thread;
     CallbackThread CallbackService;
     mutable std::mutex Mutex;
+    mutable std::mutex ioSendMutex;
     ConnectionStatusChangeCallback statusChangeCallback;
     mutable std::atomic<ClientConnectionState> ConnectionState;
   };

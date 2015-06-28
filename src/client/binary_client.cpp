@@ -772,9 +772,15 @@ private:
       }
     }
 
+    void InitializeRequestHeader(RequestHeader& requestHeader)
+    {
+      requestHeader.SessionAuthenticationToken = AuthenticationToken;
+      requestHeader.RequestHandle = GetRequestHandle();
+    };
+
     virtual std::shared_ptr<AsyncRequestContext<OpcUa::BrowseRequest, OpcUa::BrowseResponse>> beginSend(std::shared_ptr<OpcUa::BrowseRequest> request, std::function<bool(const std::shared_ptr<OpcUa::BrowseRequest>& request, std::shared_ptr<OpcUa::BrowseResponse> response)>callbackArg)
     {
-      CreateRequestHeader(request->Header);
+      InitializeRequestHeader(request->Header);
       std::shared_ptr<AsyncRequestContext<BrowseRequest, BrowseResponse>> requestContext = std::make_shared<AsyncRequestContext<BrowseRequest, BrowseResponse>>(request, callbackArg);
       ResponseCallback responseCallback = [=](std::vector<char> buffer, ResponseHeader h){
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
@@ -788,9 +794,55 @@ private:
 
     virtual std::shared_ptr<AsyncRequestContext<OpcUa::ReadRequest, OpcUa::ReadResponse>> beginSend(std::shared_ptr<OpcUa::ReadRequest> request, std::function<bool(const std::shared_ptr<OpcUa::ReadRequest>& request, std::shared_ptr<OpcUa::ReadResponse> response)>callbackArg)
     {
-      CreateRequestHeader(request->Header);
+      InitializeRequestHeader(request->Header);
 
       std::shared_ptr<AsyncRequestContext<ReadRequest, ReadResponse>> requestContext = std::make_shared<AsyncRequestContext<ReadRequest, ReadResponse>>(request, callbackArg);
+      ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
+        requestContext->OnDataReceived(std::move(buffer), std::move(h));
+      };
+      std::unique_lock<std::mutex> lock(Mutex);
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      lock.unlock();
+      Send(*request);
+      return requestContext;
+    }
+
+    virtual std::shared_ptr<AsyncRequestContext<OpcUa::CreateSubscriptionRequest, OpcUa::CreateSubscriptionResponse>> beginSend(std::shared_ptr<OpcUa::CreateSubscriptionRequest> request, std::function<bool(const std::shared_ptr<OpcUa::CreateSubscriptionRequest>& request, std::shared_ptr<OpcUa::CreateSubscriptionResponse> response)>callbackArg)
+    {
+      InitializeRequestHeader(request->Header);
+
+      std::shared_ptr<AsyncRequestContext<CreateSubscriptionRequest, CreateSubscriptionResponse>> requestContext = std::make_shared<AsyncRequestContext<CreateSubscriptionRequest, CreateSubscriptionResponse>>(request, callbackArg);
+      ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
+        requestContext->OnDataReceived(std::move(buffer), std::move(h));
+      };
+      std::unique_lock<std::mutex> lock(Mutex);
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      lock.unlock();
+      Send(*request);
+      return requestContext;
+    }
+
+    virtual std::shared_ptr<AsyncRequestContext<OpcUa::CreateMonitoredItemsRequest, OpcUa::CreateMonitoredItemsResponse>> beginSend(std::shared_ptr<OpcUa::CreateMonitoredItemsRequest> request, std::function<bool(const std::shared_ptr<OpcUa::CreateMonitoredItemsRequest>& request, std::shared_ptr<OpcUa::CreateMonitoredItemsResponse> response)>callbackArg)
+    {
+      InitializeRequestHeader(request->Header);
+
+      std::shared_ptr<AsyncRequestContext<CreateMonitoredItemsRequest, CreateMonitoredItemsResponse>> requestContext = std::make_shared<AsyncRequestContext<CreateMonitoredItemsRequest, CreateMonitoredItemsResponse>>(request, callbackArg);
+      ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
+        requestContext->OnDataReceived(std::move(buffer), std::move(h));
+      };
+      std::unique_lock<std::mutex> lock(Mutex);
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      lock.unlock();
+      Send(*request);
+      return requestContext;
+    }
+
+    virtual std::shared_ptr<AsyncRequestContext<OpcUa::PublishRequest, OpcUa::PublishResponse>> beginSend(
+      std::shared_ptr<OpcUa::PublishRequest> request, std::function<bool(const std::shared_ptr<OpcUa::PublishRequest>& request, std::shared_ptr<OpcUa::PublishResponse> response)>callbackArg)
+    {
+      InitializeRequestHeader(request->Header);
+
+      std::shared_ptr<AsyncRequestContext<PublishRequest, PublishResponse>> requestContext = std::make_shared<AsyncRequestContext<PublishRequest, PublishResponse>>(request, callbackArg);
       ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };

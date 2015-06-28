@@ -718,17 +718,7 @@ private:
       Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
       lock.unlock();
 
-      // Prevent sending messages via socket from different threads simultaneously
-      ioSendMutex.lock();
-      try
-      {
-        Send(request);
-      }
-      catch (...)
-      {
-
-      }
-      ioSendMutex.unlock();
+      Send(request);
 
       return requestCallback->WaitForData(std::chrono::milliseconds(request.Header.Timeout));
     }
@@ -736,6 +726,7 @@ private:
     template <typename Request>
     void Send(Request request) const
     {
+
       // TODO add support for breaking message into multiple chunks
       SecureHeader hdr(MT_SECURE_MESSAGE, CHT_SINGLE, ChannelSecurityToken.SecureChannelId);
       const SymmetricAlgorithmHeader algorithmHeader = CreateAlgorithmHeader();
@@ -745,6 +736,7 @@ private:
       hdr.AddSize(RawSize(sequence));
       hdr.AddSize(RawSize(request));
 
+      ioSendMutex.lock();
       try
       {
         Stream << hdr << algorithmHeader << sequence << request << flush;
@@ -768,8 +760,10 @@ private:
             //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
             break;
         }
+        ioSendMutex.unlock();
         throw ex;
       }
+      ioSendMutex.unlock();
     }
 
     void InitializeRequestHeader(RequestHeader& requestHeader)
@@ -923,6 +917,7 @@ private:
       }
       catch (std::exception ex)
       {
+        OpcUa::StatusCode serviceResultForCallbacks = StatusCode::BadCommunicationError;
         switch (ConnectionState)
         {
         case ClientConnectionState::Connecting:
@@ -932,6 +927,7 @@ private:
           break;
         case ClientConnectionState::Disconnecting:
           ConnectionState = ClientConnectionState::Disconnected;
+          serviceResultForCallbacks = StatusCode::BadDisconnect;
           //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
           break;
         case ClientConnectionState::Connected:
@@ -941,6 +937,7 @@ private:
             if (errorMessage == "Connection was closed by host.")
             {
               ConnectionState = ClientConnectionState::ConnectionClosedByServer;
+              serviceResultForCallbacks = StatusCode::BadConnectionClosed;
             }
             else
             {
@@ -949,6 +946,20 @@ private:
             statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, errorMessage);
           }
           break;
+        }
+
+        // Call callbacks for all pending requests:
+        {
+          std::unique_lock<std::mutex> lock(Mutex);
+          std::vector<char> emptyBuffer;
+          for (CallbackMap::const_iterator callbackIt = Callbacks.begin(); callbackIt != Callbacks.end();)
+          {
+            header.RequestHandle = callbackIt->first;
+            header.ServiceResult = serviceResultForCallbacks;
+            callbackIt->second.second(emptyBuffer, header);
+            callbackIt = Callbacks.erase(callbackIt);
+          }
+          lock.unlock();
         }
         throw ex;
       }

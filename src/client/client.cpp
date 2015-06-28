@@ -401,7 +401,14 @@ namespace OpcUa
 
   std::shared_ptr<AsyncUaClient> UaClient::GetAsyncClient()
   {
-    return Server->GetAsyncClient();
+    if (Server.get() == 0)
+    {
+      return 0;
+    }
+    else
+    {
+      return Server->GetAsyncClient();
+    }
   }
 
   uint32_t UaClient::LowLevelStatusChangeCallbackHandler(ClientConnectionState state, OpcUa::StatusCode statusCode, const std::string& errorMessage)

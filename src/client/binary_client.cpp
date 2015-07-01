@@ -255,6 +255,8 @@ namespace
       callback_thread.join(); //Not sure it is necessary
       
       if (Debug) std::cout << "binary_client| Stopping channel." << std::endl;
+
+      
       Channel->Stop();
 
       if (Debug) std::cout << "binary_client| Joining receive thread." << std::endl;
@@ -516,53 +518,57 @@ namespace
       CreateRequestHeader(request.Header);
       request.Header.Timeout = 0; //We do not want the request to timeout!
 
-      ResponseCallback responseCallback = [this](std::vector<char> buffer, ResponseHeader h){
-        if (Debug) {std::cout << "BinaryClient | Got Publish Response, from server " << std::endl;}
-		PublishResponse response;
-		if (h.ServiceResult != OpcUa::StatusCode::Good)
-		{
-			response.Header = std::move(h);
-		}
-		else
-		{
-			BufferInputChannel bufferInput(buffer);
-			IStreamBinary in(bufferInput);
-			in >> response;
-		}
+      ResponseCallback responseCallback = [this](std::vector<char> buffer, ResponseHeader h)
+      {
+        if (Debug) 
+        {
+          std::cout << "BinaryClient | Got Publish Response, from server " << std::endl;
+        }
+        PublishResponse response;
+        if (h.ServiceResult != OpcUa::StatusCode::Good)
+        {
+          response.Header = std::move(h);
+        }
+        else
+        {
+          BufferInputChannel bufferInput(buffer);
+          IStreamBinary in(bufferInput);
+          in >> response;
+        }
         
         CallbackService.post([this, response]() 
-            { 
-			if (response.Header.ServiceResult == OpcUa::StatusCode::Good)
-			{
-				if (Debug) { std::cout << "BinaryClient | Calling callback for Subscription " << response.Result.SubscriptionId << std::endl; }
-				SubscriptionCallbackMap::const_iterator callbackIt = this->PublishCallbacks.find(response.Result.SubscriptionId);
-				if (callbackIt == this->PublishCallbacks.end())
-				{
-					std::cout << "BinaryClient | Error Unknown SubscriptionId " << response.Result.SubscriptionId << std::endl;
-				}
-				else
-				{
-					try { //calling client code, better put it under try/catch otherwise we crash entire client
-						callbackIt->second(response.Result);
-					}
-					catch (const std::exception& ex)
-					{
-						std::cout << "Error calling application callback " << ex.what() << std::endl;
-					}
-				}
-			}
-			else if (response.Header.ServiceResult == OpcUa::StatusCode::BadSessionClosed)
-			{
-				if (Debug) 
-				{
-					std::cout << "BinaryClient | Session is closed";
-				}
-			}
-			else
-			{
-				// TODO
-			}
-            });
+        { 
+			    if (response.Header.ServiceResult == OpcUa::StatusCode::Good)
+			    {
+				    if (Debug) { std::cout << "BinaryClient | Calling callback for Subscription " << response.Result.SubscriptionId << std::endl; }
+				    SubscriptionCallbackMap::const_iterator callbackIt = this->PublishCallbacks.find(response.Result.SubscriptionId);
+				    if (callbackIt == this->PublishCallbacks.end())
+				    {
+					    std::cout << "BinaryClient | Error Unknown SubscriptionId " << response.Result.SubscriptionId << std::endl;
+				    }
+				    else
+				    {
+					    try { //calling client code, better put it under try/catch otherwise we crash entire client
+						    callbackIt->second(response.Result);
+					    }
+					    catch (const std::exception& ex)
+					    {
+						    std::cout << "Error calling application callback " << ex.what() << std::endl;
+					    }
+				    }
+			    }
+			    else if (response.Header.ServiceResult == OpcUa::StatusCode::BadSessionClosed)
+			    {
+				    if (Debug) 
+				    {
+					    std::cout << "BinaryClient | Session is closed";
+				    }
+			    }
+			    else
+			    {
+				    // TODO
+			    }
+        });
       };
       std::unique_lock<std::mutex> lock(Mutex);
       Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
@@ -679,6 +685,7 @@ namespace
 
     virtual void CloseSecureChannel(uint32_t channelId)
     {
+      ioSendMutex.lock();
       try
       {
         if (Debug) {std::cout << "binary_client| CloseSecureChannel -->" << std::endl;}
@@ -701,6 +708,7 @@ namespace
       {
         std::cerr << "Closing secure channel failed with error: " << exc.what() << std::endl;
       }
+      ioSendMutex.unlock();
       if (Debug) {std::cout << "binary_client| CloseSecureChannel <--" << std::endl;}
     }
 
@@ -852,6 +860,8 @@ private:
       ResponseHeader header;
       std::vector<char> buffer;
       NodeId id;
+
+      std::unique_lock<std::mutex> send_lock(ioReceiveMutex);
       try
       {
         Binary::SecureHeader responseHeader;
@@ -971,6 +981,10 @@ private:
       }
       else
       {
+        if (buffer.size() == 0)
+        {
+          header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+        }
         // TODO - Probably it is better to call function outside of the lock
         callbackIt->second.second(std::move(buffer), std::move(header));
         Callbacks.erase(callbackIt);
@@ -981,25 +995,38 @@ private:
     Binary::Acknowledge HelloServer(const SecureConnectionParams& params)
     {
       if (Debug) {std::cout << "binary_client| HelloServer -->" << std::endl;}
-      Binary::Hello hello;
-      hello.ProtocolVersion = 0;
-      hello.ReceiveBufferSize = 0xFFFFFF;
-      hello.SendBufferSize = 0xFFFFFF;
-      hello.MaxMessageSize = 0xFFFFFF;
-      hello.MaxChunkCount = 256;
-      hello.EndpointUrl = params.EndpointUrl;
-
-      Binary::Header hdr(Binary::MT_HELLO, Binary::CHT_SINGLE);
-      hdr.AddSize(RawSize(hello));
-
-      Stream << hdr << hello << flush;
-
-      Header respHeader;
-      Stream >> respHeader; // TODO add check for acknowledge header
 
       Acknowledge ack;
-      Stream >> ack; // TODO check for connection parameters
+
+      ioSendMutex.lock();
+      try
+      {
+        Binary::Hello hello;
+        hello.ProtocolVersion = 0;
+        hello.ReceiveBufferSize = 0xFFFFFF;
+        hello.SendBufferSize = 0xFFFFFF;
+        hello.MaxMessageSize = 0xFFFFFF;
+        hello.MaxChunkCount = 256;
+        hello.EndpointUrl = params.EndpointUrl;
+
+        Binary::Header hdr(Binary::MT_HELLO, Binary::CHT_SINGLE);
+        hdr.AddSize(RawSize(hello));
+
+        Stream << hdr << hello << flush;
+
+        Header respHeader;
+        Stream >> respHeader; // TODO add check for acknowledge header
+
+        Stream >> ack; // TODO check for connection parameters
+      }
+      catch (std::exception ex)
+      {
+        ioSendMutex.unlock();
+        throw ex;
+      }
+      ioSendMutex.unlock();
       if (Debug) {std::cout << "binary_client| HelloServer <--" << std::endl;}
+
       return ack;
     }
 
@@ -1057,6 +1084,7 @@ private:
     CallbackThread CallbackService;
     mutable std::mutex Mutex;
     mutable std::mutex ioSendMutex;
+    mutable std::mutex ioReceiveMutex;
     ConnectionStatusChangeCallback statusChangeCallback;
     mutable std::atomic<ClientConnectionState> ConnectionState;
   };
@@ -1074,7 +1102,10 @@ private:
 
     const SequenceHeader sequence = CreateSequenceHeader();
     hdr.AddSize(RawSize(sequence));
-    Stream << hdr << algorithmHeader << sequence << request << flush;
+    {
+      std::unique_lock<std::mutex> send_lock(ioSendMutex);
+      Stream << hdr << algorithmHeader << sequence << request << flush;
+    }
   }
 } // namespace
 

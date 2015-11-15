@@ -20,15 +20,16 @@ namespace OpcUa
 {
     enum ClientConnectionState
     {
-      Disconnected = 0, // Initial state
+      InitialState = 0, // Initial state
       Connecting,       // 
-      CouldNotConnect,  // Connection attempt failed
       Reconnecting,     // Auto-reconnection attempt started
+      CouldNotConnect,  // Connection attempt failed
       Connected,        // Successfully connected
-      Reconnected,
-      ConnectionClosedByServer,
+      Reconnected,      // Reconnected to existing session. No need to re-create subscriptions/monitored items
+      ConnectionClosedByServer, //
       CommunicationError,  // Communication error happened. 
-      Disconnecting
+      Disconnecting,    // Started disconnection process
+      Disconnected
     };
 
     // This function will be called whenever connection/disconnection process is started and finished or state is changed.

@@ -212,8 +212,34 @@ namespace
       ConnectionState = ClientConnectionState::Disconnected;
       //statusChangeCallback(ConnectionState, OpcUa::StatusCode::Good, "Initial state - disconnected");
       //Initialize the worker thread for subscriptions
-      callback_thread = std::thread([&](){ CallbackService.Run(); });
+      //callback_thread = std::thread([&](){ CallbackService.Run(); });
 
+      requestQueueCleanerThread = std::thread([&](){
+        while (!Finished)
+        {
+          //Remove timed out requests from the queue and call callback functions to let higher level application know:
+          std::unique_lock<std::mutex> lock(Mutex);
+          ResponseHeader header;
+          header.ServiceResult = OpcUa::StatusCode::BadTimeout;
+          for (CallbackMap::iterator callbackIt = Callbacks.begin(); callbackIt != Callbacks.end(); )
+          {
+            std::chrono::steady_clock::time_point requestTimeoutTime = callbackIt->second.first;
+            int32_t timeOverdue = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - requestTimeoutTime).count();
+            if (timeOverdue > 10)
+            {
+              header.RequestHandle = callbackIt->first;
+              callbackIt->second.second(std::vector<char>(), header);
+              callbackIt = Callbacks.erase(callbackIt);
+            }
+            else
+            {
+              callbackIt++;
+            }
+          }
+          lock.unlock();
+          std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+      });
       HelloServer(params);
 
       ReceiveThread = std::move(std::thread([=]()
@@ -249,10 +275,10 @@ namespace
       ConnectionState = ClientConnectionState::Disconnecting;
       Finished = true;
       
-      if (Debug) std::cout << "binary_client| Stopping callback thread." << std::endl;
-      CallbackService.Stop();
-      if (Debug) std::cout << "binary_client| Joining service thread." << std::endl;
-      callback_thread.join(); //Not sure it is necessary
+      //if (Debug) std::cout << "binary_client| Stopping callback thread." << std::endl;
+      //CallbackService.Stop();
+      //if (Debug) std::cout << "binary_client| Joining service thread." << std::endl;
+      //callback_thread.join(); //Not sure it is necessary
       
       if (Debug) std::cout << "binary_client| Stopping channel." << std::endl;
 
@@ -262,6 +288,8 @@ namespace
       if (Debug) std::cout << "binary_client| Joining receive thread." << std::endl;
       ReceiveThread.join();
       if (Debug) std::cout << "binary_client| Receive tread stopped." << std::endl;
+
+      requestQueueCleanerThread.join();
 
       if (Debug) std::cout << "binary_client| Cleaning callbacks queue" << std::endl;
       std::unique_lock<std::mutex> lock(Mutex);
@@ -788,7 +816,9 @@ private:
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(request->Header.Timeout),
+        responseCallback)));
       lock.unlock();
       Send(*request);
       return requestContext;
@@ -803,7 +833,8 @@ private:
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(request->Header.Timeout), responseCallback)));
       lock.unlock();
       Send(*request);
       return requestContext;
@@ -818,7 +849,8 @@ private:
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(request->Header.Timeout), responseCallback)));
       lock.unlock();
       Send(*request);
       return requestContext;
@@ -833,7 +865,8 @@ private:
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(request->Header.Timeout), responseCallback)));
       lock.unlock();
       Send(*request);
       return requestContext;
@@ -849,7 +882,8 @@ private:
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(request->Header.Timeout), responseCallback)));
       lock.unlock();
       Send(*request);
       return requestContext;
@@ -1087,6 +1121,8 @@ private:
     mutable std::mutex ioReceiveMutex;
     ConnectionStatusChangeCallback statusChangeCallback;
     mutable std::atomic<ClientConnectionState> ConnectionState;
+
+    std::thread requestQueueCleanerThread;
   };
 
   template <>

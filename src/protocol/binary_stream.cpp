@@ -439,9 +439,9 @@ namespace OpcUa
     template<>
     void DataDeserializer::Deserialize<std::string>(std::string& value)
     {
-      uint32_t stringSize = 0;
+      int32_t stringSize = 0;
       *this >> stringSize;
-      if (stringSize != ~uint32_t())
+      if (stringSize > 0)
       {
         value.resize(stringSize);
         GetData(In, &value[0], stringSize);
@@ -505,15 +505,16 @@ namespace OpcUa
     template<>
     void DataDeserializer::Deserialize<ByteString>(ByteString& value)
     {
-      uint32_t stringSize = 0;
+      int32_t stringSize = 0;
       *this >> stringSize;
-      if (stringSize != ~uint32_t())
+      uint32_t tmp = ~uint32_t();
+
+      if (stringSize > 0) // ~uint32_t())
       {
         value.Data.resize(stringSize);
         GetData(In, reinterpret_cast<char*>(&value.Data[0]), stringSize);
         return;
       }
-
       value.Data.clear();
       return;
     }
@@ -1222,7 +1223,6 @@ namespace OpcUa
         *this >> lt.Text;
       }
     };
-
 
     template<>
     void DataSerializer::Serialize<std::vector<LocalizedText>>(const std::vector<LocalizedText>& value)

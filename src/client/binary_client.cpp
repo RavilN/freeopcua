@@ -1,6 +1,6 @@
 /// @author Alexander Rykovanov 2012
 /// @email rykovanov.as@gmail.com
-/// @brief Remote server implementaion.
+/// @brief Remote server implementation.
 /// @license GNU LGPL
 ///
 /// Distributed under the GNU LGPL License
@@ -86,7 +86,25 @@ namespace
     }
     ~RequestCallback()
     {
-
+      if (lock.owns_lock())
+      {
+        try
+        {
+          lock.unlock();
+        }
+        catch (std::exception ex)
+        {
+          std::cout << "Exception in RequestCallback: " << ex.what() << std::endl;
+        }
+        catch (uint32_t code)
+        {
+          std::cout << "Exception in RequestCallback: error code " << code << std::endl;
+        }
+      }
+      else
+      {
+        lock.lock();
+      }
     }
 
     void OnData(std::vector<char> data, ResponseHeader h)
@@ -106,12 +124,12 @@ namespace
       {
         std::cout << "Error: Received empty packet from server" << std::endl;
       }
-	  else
-	  {
-		  BufferInputChannel bufferInput(Data);
-		  IStreamBinary in(bufferInput);
-		  in >> result;
-	  }
+	    else
+	    {
+		    BufferInputChannel bufferInput(Data);
+		    IStreamBinary in(bufferInput);
+		    in >> result;
+	    }
       return result;
     }
 
@@ -211,8 +229,9 @@ namespace
       statusChangeCallback = callback;
       ConnectionState = ClientConnectionState::Disconnected;
       //statusChangeCallback(ConnectionState, OpcUa::StatusCode::Good, "Initial state - disconnected");
+      
       //Initialize the worker thread for subscriptions
-      //callback_thread = std::thread([&](){ CallbackService.Run(); });
+      callback_thread = std::thread([&](){ CallbackService.Run(); });
 
       requestQueueCleanerThread = std::thread([&](){
         while (!Finished)
@@ -224,12 +243,43 @@ namespace
           for (CallbackMap::iterator callbackIt = Callbacks.begin(); callbackIt != Callbacks.end(); )
           {
             std::chrono::steady_clock::time_point requestTimeoutTime = callbackIt->second.first;
-            int32_t timeOverdue = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - requestTimeoutTime).count();
-            if (timeOverdue > 10)
+
+            int32_t timeOverdue = 0;
+            if (std::chrono::steady_clock::now() > requestTimeoutTime)
+            {
+              timeOverdue = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - requestTimeoutTime).count();
+            }
+            
+            if (timeOverdue > 100)
             {
               header.RequestHandle = callbackIt->first;
-              callbackIt->second.second(std::vector<char>(), header);
-              callbackIt = Callbacks.erase(callbackIt);
+              try
+              {
+                std::vector<char> emptyContent;
+                if (debug)
+                {
+                  std::cout << "Request with id = " << header.RequestHandle << " timed out - calling back ... " << std::endl;
+                }
+                callbackIt->second.second(emptyContent, header);
+              }
+              catch (std::exception ex)
+              {
+                auto message = ex.what();
+                if (debug) std::cout << "Exception caught on callback call: " << ex.what() << std::endl;
+              }
+              try
+              {
+                callbackIt = Callbacks.erase(callbackIt);
+              }
+              catch (std::exception ex)
+              {
+                auto message = ex.what();
+                if (debug) std::cout << "Exception caught on attempt to erase RequestCallback: " << ex.what() << std::endl;
+              }
+              if (debug)
+              {
+                std::cout << "Timed out request with id = " << header.RequestHandle << " removed from callbacks queue " << std::endl;
+              }
             }
             else
             {
@@ -237,14 +287,14 @@ namespace
             }
           }
           lock.unlock();
-          std::this_thread::sleep_for(std::chrono::microseconds(100));
+          std::this_thread::sleep_for(std::chrono::microseconds(1000));
         }
       });
       HelloServer(params);
 
       ReceiveThread = std::move(std::thread([=]()
       {
-        while(!Finished)
+        while( !Finished )
         {
           try
           {
@@ -254,17 +304,24 @@ namespace
           {
             if (Finished)
             {
-              std::cerr << "binary_client | disconnected from Server" << std::endl;
-              break;
+              if (Debug) std::cerr << "binary_client | disconnected from Server" << std::endl;
             }
             else
             {
-              if (Debug)
-              {
-                std::cerr << "binary_client| CallbackThread : Error receiving data: " << exc.what() << std::endl;
-              }
+              if (Debug) std::cerr << "binary_client | error receiving data: " << exc.what() << std::endl;
             }
-            break;
+          }
+          catch (const char* message)
+          {
+            if (Debug) std::cerr << "binary_client | char error receiving data: " << message << std::endl;
+          }
+          catch (const std::string& message)
+          {
+            if (Debug) std::cerr << "binary_client | string error receiving data: " << message << std::endl;
+          }
+          catch (...)
+          {
+            if (Debug) std::cerr << "binary_client | error receiving data, unknown error" << std::endl;
           }
         }
       }));
@@ -275,16 +332,16 @@ namespace
       ConnectionState = ClientConnectionState::Disconnecting;
       Finished = true;
       
-      //if (Debug) std::cout << "binary_client| Stopping callback thread." << std::endl;
-      //CallbackService.Stop();
-      //if (Debug) std::cout << "binary_client| Joining service thread." << std::endl;
-      //callback_thread.join(); //Not sure it is necessary
+      if (Debug) std::cout << "binary_client| Stopping callback thread." << std::endl;
+      CallbackService.Stop();
+      if (Debug) std::cout << "binary_client| Joining service thread." << std::endl;
+      callback_thread.join(); //Not sure it is necessary
       
-      if (Debug) std::cout << "binary_client| Stopping channel." << std::endl;
-
-      
+      if (Debug) std::cout << "binary_client| Stopping communication channel." << std::endl;
       Channel->Stop();
+      if (Debug) std::cout << "binary_client| Communication channel stopped." << std::endl;
 
+      // The channel must be closed before joining to the ReceiveThread. Otherwise the receive thread would not exit (will exit only when UA Server closes connection)
       if (Debug) std::cout << "binary_client| Joining receive thread." << std::endl;
       ReceiveThread.join();
       if (Debug) std::cout << "binary_client| Receive tread stopped." << std::endl;
@@ -504,7 +561,7 @@ namespace
       if (Debug)  { std::cout << "binary_client| CreateSubscription -->" << std::endl; }
       const CreateSubscriptionResponse response = Send<CreateSubscriptionResponse>(request);
       if (Debug) std::cout << "BinaryClient | got CreateSubscriptionResponse" << std::endl;
-      PublishCallbacks[response.Data.Id] = callback;// TODO Pass calback to the Publish method.
+      PublishCallbacks[response.Data.Id] = callback;// TODO Pass callback to the Publish method.
       if (Debug)  { std::cout << "binary_client| CreateSubscription <--" << std::endl; }
       return response.Data;
     }
@@ -598,9 +655,11 @@ namespace
 			    }
         });
       };
+      
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(calculateTimeoutTime(request.Header.Timeout), responseCallback)));
       lock.unlock();
+
       Send(request);
       if (Debug) {std::cout << "binary_client| Publish  <--" << std::endl;}
     }
@@ -751,7 +810,7 @@ private:
         requestCallback->OnData(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(std::chrono::steady_clock::now(), responseCallback)));
+      Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(calculateTimeoutTime(request.Header.Timeout), responseCallback)));
       lock.unlock();
 
       Send(request);
@@ -816,9 +875,7 @@ private:
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(request->Header.Timeout),
-        responseCallback)));
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
       lock.unlock();
       Send(*request);
       return requestContext;
@@ -833,8 +890,7 @@ private:
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(request->Header.Timeout), responseCallback)));
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
       lock.unlock();
       Send(*request);
       return requestContext;
@@ -849,8 +905,7 @@ private:
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(request->Header.Timeout), responseCallback)));
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
       lock.unlock();
       Send(*request);
       return requestContext;
@@ -865,8 +920,7 @@ private:
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(request->Header.Timeout), responseCallback)));
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
       lock.unlock();
       Send(*request);
       return requestContext;
@@ -882,8 +936,7 @@ private:
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
       std::unique_lock<std::mutex> lock(Mutex);
-      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(request->Header.Timeout), responseCallback)));
+      Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
       lock.unlock();
       Send(*request);
       return requestContext;
@@ -1000,7 +1053,21 @@ private:
           {
             header.RequestHandle = callbackIt->first;
             header.ServiceResult = serviceResultForCallbacks;
-            callbackIt->second.second(emptyBuffer, header);
+            try
+            {
+              std::cout << "Removing request with id = " << header.RequestHandle << " from callbacks queue due to the Receive thread stopping" << std::endl;
+              callbackIt->second.second(emptyBuffer, header);
+            }
+            catch (std::exception& ex)
+            {
+              int i = 0;
+              i++;
+            }
+            catch (...)
+            {
+              int i = 0;
+              i++;
+            }
             callbackIt = Callbacks.erase(callbackIt);
           }
           lock.unlock();
@@ -1020,7 +1087,18 @@ private:
           header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
         }
         // TODO - Probably it is better to call function outside of the lock
-        callbackIt->second.second(std::move(buffer), std::move(header));
+        try
+        {
+          callbackIt->second.second(std::move(buffer), std::move(header));
+        }
+        catch (std::exception ex)
+        {
+          std::cout << "binary-client| Exception caught in Receive callback: " << ex.what() << "\n";
+        }
+        catch (uint32_t ex)
+        {
+          std::cout << "binary-client| Integer type exception caught in Receive callback: " << ex << "\n";
+        }
         Callbacks.erase(callbackIt);
       }
       lock.unlock();
@@ -1091,6 +1169,18 @@ private:
     unsigned GetRequestHandle() const
     {
       return ++RequestHandle;
+    }
+
+    std::chrono::time_point<std::chrono::system_clock> calculateTimeoutTime(uint32_t timeout) const 
+    {
+      if (timeout > 0)
+      {
+        return std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
+      }
+      else
+      {
+        return std::chrono::steady_clock::now() + std::chrono::hours(1);
+      }
     }
 
   private:

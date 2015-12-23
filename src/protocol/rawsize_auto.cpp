@@ -296,7 +296,7 @@ namespace OpcUa
 */
 
 /* DISABLED
-
+*/
     template<>
     std::size_t RawSize<ExtensionObject>(const ExtensionObject& data)
     {
@@ -307,7 +307,7 @@ namespace OpcUa
         return size;
     }
 
-*/
+
 
 /* DISABLED
 

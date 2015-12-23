@@ -40,14 +40,10 @@ namespace OpcUa
     }
     void OnDataReceived(std::vector<char> data, OpcUa::ResponseHeader h)
     {
-      {
+      //{
         std::lock_guard<std::mutex> lock(m);
         response->Header = std::move(h);
-        if (data.empty())
-        {
-          std::cout << "Error: Received packet with empty body from server" << std::endl;
-        }
-        else
+        if (!data.empty())
         {
           try
           {
@@ -67,7 +63,7 @@ namespace OpcUa
           }
         }
         isPending = false;
-      }
+      //}
       callbackFunction(request, response);
       doneEvent.notify_all();
     }

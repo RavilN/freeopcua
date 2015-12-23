@@ -739,9 +739,13 @@ namespace OpcUa
     template<>
     void DataDeserializer::Deserialize<OpcUa::ExpandedNodeId>(OpcUa::ExpandedNodeId& id)
     {
-      *this >> *(NodeId*) &id;
+      *this >> *((NodeId*) &id);
     };
-
+    template<>
+    void DataDeserializer::Deserialize<std::vector<OpcUa::ExpandedNodeId>>(std::vector<OpcUa::ExpandedNodeId>& value)
+    {
+      DeserializeContainer(*this, value);
+    }
 
   } // namespace Binary
 } // namespace OpcUa

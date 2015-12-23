@@ -36,7 +36,7 @@ namespace OpcUa
     EV_Server_INDEX_FLAG = 0x40,
     EV_NAMESPACE_URI_FLAG = 0x80,
 
-    EV_VALUE_MASK = 0x3f,
+    EV_VALUE_MASK = 0x07 // ignore bits other than 1, 2 and 3 - they can be set to 1. 
   };
 
   struct ExpandedNodeId;

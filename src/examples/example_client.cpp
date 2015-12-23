@@ -34,7 +34,9 @@ int main(int argc, char** argv)
 		//std::string endpoint = "opc.tcp://user:password@192.168.56.101:48030";
 		//std::string endpoint = "opc.tcp://127.0.0.1:4841/freeopcua/server/";
 		//std::string endpoint = "opc.tcp://localhost:53530/OPCUA/SimulationServer/";
-		std::string endpoint = "opc.tcp://localhost:48010";
+		//std::string endpoint = "opc.tcp://localhost:48010";
+    std::string endpoint = "opc.tcp://onewa.cloudapp.net:4840";
+
 
 		if (argc > 1)
 			endpoint = argv[1];
@@ -88,8 +90,8 @@ int main(int argc, char** argv)
 		SubClient sclt;
 		std::unique_ptr<Subscription> sub = client.CreateSubscription(100, sclt);
 		uint32_t handle = sub->SubscribeDataChange(myvar);
-		std::cout << "Got sub handle: " << handle << ", sleeping 5 seconds" << std::endl;
-		std::this_thread::sleep_for(std::chrono::seconds(5));
+		std::cout << "Got sub handle: " << handle << ", sleeping 10 seconds" << std::endl;
+		std::this_thread::sleep_for(std::chrono::seconds(10));
 
 		std::cout << "Disconnecting" << std::endl;
 		client.Disconnect();

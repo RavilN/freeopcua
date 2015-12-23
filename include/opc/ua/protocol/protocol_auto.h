@@ -99,14 +99,14 @@ namespace OpcUa
 */
 
 /* DISABLED
-
+*/
     struct ExtensionObject 
     {
          OpcUa::NodeId TypeId;
          uint8_t Encoding;
          OpcUa::ByteString Body;
     };
-*/
+
 
 /* DISABLED
 

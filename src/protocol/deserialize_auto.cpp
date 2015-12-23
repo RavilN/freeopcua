@@ -241,10 +241,25 @@ namespace OpcUa
     template<>
     void DataDeserializer::Deserialize<XmlElement>(XmlElement& data)
     {
-        *this >> data.Length;
-        DeserializeContainer(*this, data.Value);
+      data.Value.clear();
+      *this >> data.Length;
+      if (data.Length > 0)
+      {
+        uint8_t value;
+        data.Value.reserve(data.Length);
+        for (int index = 0; index < data.Length; index++)
+        {
+          DataDeserializer::Deserialize<uint8_t>(value);
+          data.Value.push_back(value);
+        }
+      }
+      //DeserializeContainer(*this, data.Value);
     }
-
+    template<>
+    void DataDeserializer::Deserialize<std::vector<OpcUa::XmlElement>>(std::vector<OpcUa::XmlElement>& value)
+    {
+      DeserializeContainer(*this, value);
+    }
 
 /*  DISABLED
 
@@ -329,15 +344,37 @@ namespace OpcUa
 
 /*  DISABLED
 
+*/
     template<>
     void DataDeserializer::Deserialize<ExtensionObject>(ExtensionObject& data)
     {
         *this >> data.TypeId;
         *this >> data.Encoding;
-        if ((data.Encoding) & (1>>(0))) *this >> data.Body;
+        // if ((data.Encoding) & (1>>(0))) *this >> data.Body;
+        if (data.Encoding == 1)
+        {
+          *this >> data.Body;
+        }
+        else
+        {
+          int32_t length;
+          *this >> length;
+          if (length > 0)
+          {
+            int8_t data = 0;
+            for (int index = 0; index < length; index++)
+            {
+              *this >> data;
+            }
+          }
+        }
     }
 
-*/
+    template<>
+    void DataDeserializer::Deserialize<std::vector<ExtensionObject>>(std::vector<ExtensionObject>& value)
+    {
+      DeserializeContainer(*this, value);
+    }
 
 /*  DISABLED
 

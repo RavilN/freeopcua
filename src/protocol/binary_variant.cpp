@@ -16,6 +16,7 @@
 #include <opc/ua/protocol/types.h>
 #include <opc/ua/protocol/variant.h>
 #include <opc/ua/protocol/variant_visitor.h>
+#include "opc/ua/protocol/protocol_auto.h"
 
 #include <algorithm>
 #include <functional>
@@ -351,7 +352,10 @@ namespace OpcUa
     (t == typeid(std::vector<QualifiedName>)) ||
 //    (t == typeid(std::vector<DataValue>))  ||
     (t == typeid(std::vector<Variant>))    ||
-    (t == typeid(std::vector<DiagnosticInfo>));
+    (t == typeid(std::vector<DiagnosticInfo>)) ||
+    (t == typeid(std::vector<ExpandedNodeId>)) ||
+    (t == typeid(std::vector<XmlElement>)) ||
+    (t == typeid(std::vector<ExtensionObject>));
   }
 
   VariantType Variant::Type() const
@@ -406,6 +410,12 @@ namespace OpcUa
       return VariantType::VARIANT;
     else if (t == typeid(DiagnosticInfo) || t == typeid(std::vector<DiagnosticInfo>))
       return VariantType::DIAGNOSTIC_INFO;
+    else if (t == typeid(ExpandedNodeId) || t == typeid(std::vector<ExpandedNodeId>))
+      return VariantType::EXPANDED_NODE_Id;
+    else if (t == typeid(XmlElement) || t == typeid(std::vector<XmlElement>))
+      return VariantType::XML_ELEMENT;
+    else if (t == typeid(ExtensionObject) || t == typeid(std::vector<ExtensionObject>))
+      return VariantType::EXTENSION_OBJECT;
 
     throw std::runtime_error(std::string("Unknown variant type '") + t.name() + "'.");
   }
@@ -547,10 +557,12 @@ namespace OpcUa
       case VariantType::STATUS_CODE:      return ObjectId::StatusCode;
       case VariantType::QUALIFIED_NAME:   return ObjectId::QualifiedName;
       case VariantType::LOCALIZED_TEXT:   return ObjectId::LocalizedText;
-      case VariantType::DIAGNOSTIC_INFO:  return ObjectId::DiagnosticInfo;
+      case VariantType::EXTENSION_OBJECT: return ObjectId::Structure;
       case VariantType::DATA_VALUE:       return ObjectId::DataValue;
+      case VariantType::DIAGNOSTIC_INFO:  return ObjectId::DiagnosticInfo;
+      
       case VariantType::NUL:              return ObjectId::Null;
-      case VariantType::EXTENSION_OBJECT:
+      
       case VariantType::VARIANT:
       default:
       {
@@ -784,6 +796,12 @@ namespace OpcUa
         var = deserializer.get<NodeId>();
       else if(encodingMask == ((uint8_t)VariantType::NODE_Id | HAS_ARRAY_MASK))
         var = deserializer.get<std::vector<NodeId>>();
+
+      else if (encodingMask == ((uint8_t)VariantType::EXPANDED_NODE_Id))
+        var = deserializer.get<ExpandedNodeId>();
+      else if (encodingMask == ((uint8_t)VariantType::EXPANDED_NODE_Id | HAS_ARRAY_MASK))
+        var = deserializer.get<std::vector<ExpandedNodeId>>();
+
       else if(encodingMask == ((uint8_t)VariantType::STATUS_CODE))
         var = deserializer.get<StatusCode>();
       else if(encodingMask == ((uint8_t)VariantType::STATUS_CODE | HAS_ARRAY_MASK))
@@ -808,14 +826,21 @@ namespace OpcUa
         var = deserializer.get<std::vector<Variant>>();
       else if(encodingMask == ((uint8_t)VariantType::DIAGNOSTIC_INFO))
         var = deserializer.get<DiagnosticInfo>();
-      else if(encodingMask == ((uint8_t)VariantType::DIAGNOSTIC_INFO | HAS_ARRAY_MASK))
+      else if (encodingMask == ((uint8_t)VariantType::DIAGNOSTIC_INFO | HAS_ARRAY_MASK))
         var = deserializer.get<std::vector<DiagnosticInfo>>();
+      else if (encodingMask == ((uint8_t)VariantType::XML_ELEMENT))
+        var = deserializer.get<XmlElement>();
+      else if (encodingMask == ((uint8_t)VariantType::XML_ELEMENT | HAS_ARRAY_MASK))
+        var = deserializer.get<std::vector<XmlElement>>();
+
       else if(encodingMask == ((uint8_t)VariantType::EXTENSION_OBJECT))
-        throw std::logic_error("Deserialization of VariantType::EXTENSION_OBJECT is not supported yet.");
+        var = deserializer.get<ExtensionObject>();
+        //throw std::logic_error("Deserialization of VariantType::EXTENSION_OBJECT is not supported yet.");
       else if(encodingMask == ((uint8_t)VariantType::EXTENSION_OBJECT | HAS_ARRAY_MASK))
-        throw std::logic_error("Deserialization of VariantType::EXTENSION_OBJECT[] array is not supported yet.");
+        var = deserializer.get<std::vector<ExtensionObject>>();
+        // throw std::logic_error("Deserialization of VariantType::EXTENSION_OBJECT[] array is not supported yet.");
       else
-        throw std::logic_error("Deserialization of VariantType: " + std::to_string(encodingMask) + " is not supported yet.");
+        throw std::logic_error("Deserialization of VariantType:: " + std::to_string(encodingMask) + " is not supported yet.");
 
       if (encoding & HAS_DIMENSIONS_MASK)
       {

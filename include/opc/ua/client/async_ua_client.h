@@ -22,7 +22,7 @@ namespace OpcUa
 
   public:
     AsyncRequestContext(std::shared_ptr<Request> requestToExecute, std::function<bool(const std::shared_ptr<Request> request, std::shared_ptr<Response> response)> callbackFunctionArg)
-      //: lock(m)
+      : lock(m, std::defer_lock_t())
     {
       this->request = requestToExecute;
       this->response = std::make_shared<Response>();
@@ -31,50 +31,43 @@ namespace OpcUa
     }
     ~AsyncRequestContext()
     {
-      int i = 0;
-      i = i + 1;
+      lock.lock();
       if (isPending)
       {
-        Cancel();
-      }
-    }
-    void OnDataReceived(std::vector<char> data, OpcUa::ResponseHeader h)
-    {
-      //{
-        std::lock_guard<std::mutex> lock(m);
-        response->Header = std::move(h);
-        if (!data.empty())
-        {
-          try
-          {
-            BufferInputChannel bufferInput(data);
-            IStreamBinary in(bufferInput);
-            in >> *response;
-          }
-          catch (std::exception ex)
-          {
-            // If the service result is already set to failure, do not modify it:
-            if (response->Header.ServiceResult == OpcUa::StatusCode::Good)
-            {
-              response->Header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
-            }
-            std::cout << "Error: packet could not be processed, status code=" << (uint32_t)response->Header.ServiceResult << ", exception=" << ex.what() << std::endl;
-            //TODO: add diagnostic info to the response
-          }
-        }
-        isPending = false;
-      //}
-      callbackFunction(request, response);
-      doneEvent.notify_all();
-    }
-    void Cancel()
-    {
-      {
-        std::lock_guard<std::mutex> lock(m);
         response->Header.ServiceResult = OpcUa::StatusCode::BadRequestCancelledByClient;
         callbackFunction(request, response);
         isPending = false;
       }
+      lock.unlock();
+      doneEvent.notify_all();
+    }
+
+    void OnDataReceived(std::vector<char> data, OpcUa::ResponseHeader h)
+    {
+      lock.lock();
+      response->Header = std::move(h);
+      if (!data.empty())
+      {
+        try
+        {
+          BufferInputChannel bufferInput(data);
+          IStreamBinary in(bufferInput);
+          in >> *response;
+        }
+        catch (std::exception ex)
+        {
+          // If the service result is already set to failure, do not modify it:
+          if (response->Header.ServiceResult == OpcUa::StatusCode::Good)
+          {
+            response->Header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+          }
+          std::cout << "Error: packet could not be processed, status code=" << (uint32_t)response->Header.ServiceResult << ", exception=" << ex.what() << std::endl;
+          //TODO: add diagnostic info to the response
+        }
+      }
+      callbackFunction(request, response);
+      isPending = false;
+      lock.unlock();
       doneEvent.notify_all();
     }
     std::shared_ptr<Response> WaitForCompletion(std::chrono::milliseconds msec)
@@ -83,7 +76,7 @@ namespace OpcUa
       {
         msec = 0x7FFFFFFF; //TODO - put proper max value
       }
-      std::unique_lock<std::mutex> l(m);
+      lock.lock();
       doneEvent.wait_for(lock, msec, []{return !isPending; });
       m.unlock();
       return response;
@@ -96,7 +89,7 @@ namespace OpcUa
     std::function<bool(const std::shared_ptr<Request>& request, std::shared_ptr<Response> response)> callbackFunction;
   private:
     std::mutex m;
-    //std::unique_lock<std::mutex> lock;
+    std::unique_lock<std::mutex> lock;
     std::condition_variable doneEvent;
     bool isPending;
   };

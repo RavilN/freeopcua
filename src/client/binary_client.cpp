@@ -81,43 +81,30 @@ namespace
   {
   public:
     RequestCallback()
-      : lock(m)
+      : lock(m, std::defer_lock_t())
     {
     }
     ~RequestCallback()
     {
-      if (lock.owns_lock())
-      {
-        try
-        {
-          lock.unlock();
-        }
-        catch (std::exception ex)
-        {
-          std::cout << "Exception in RequestCallback: " << ex.what() << std::endl;
-        }
-        catch (uint32_t code)
-        {
-          std::cout << "Exception in RequestCallback: error code " << code << std::endl;
-        }
-      }
-      else
-      {
-        lock.lock();
-      }
+      lock.lock();
+      lock.unlock();
     }
 
     void OnData(std::vector<char> data, ResponseHeader h)
     {
       //PrintBlob(data);
+      lock.lock();
       Data = std::move(data);
       this->header = std::move(h);
+      lock.unlock();
       doneEvent.notify_all();
     }
 
     T WaitForData(std::chrono::milliseconds msec)
     {
-      doneEvent.wait_for(lock, msec);
+      lock.lock();
+      doneEvent.wait_for(lock, msec); // This wait_for call releases the lock and waits for notification
+      // When notification is received, the lock is acquired again, so now it is safe to access data:
       T result;
 	    result.Header = std::move(this->header);
       if ( Data.empty() )
@@ -130,6 +117,7 @@ namespace
 		    IStreamBinary in(bufferInput);
 		    in >> result;
 	    }
+      lock.unlock(); // And finally release the lock
       return result;
     }
 
@@ -194,6 +182,7 @@ namespace
     private:
       bool Debug = false;
       std::mutex Mutex;
+      std::unique_lock<std::mutex> lock;
       std::condition_variable Condition;
       std::atomic<bool> StopRequest;
       std::queue<std::function<void()>> Queue;
@@ -237,7 +226,7 @@ namespace
         while (!Finished)
         {
           //Remove timed out requests from the queue and call callback functions to let higher level application know:
-          std::unique_lock<std::mutex> lock(Mutex);
+          Mutex.lock();
           ResponseHeader header;
           header.ServiceResult = OpcUa::StatusCode::BadTimeout;
           for (CallbackMap::iterator callbackIt = Callbacks.begin(); callbackIt != Callbacks.end(); )
@@ -256,7 +245,7 @@ namespace
               try
               {
                 std::vector<char> emptyContent;
-                if (debug)
+                if (Debug)
                 {
                   std::cout << "Request with id = " << header.RequestHandle << " timed out - calling back ... " << std::endl;
                 }
@@ -265,7 +254,7 @@ namespace
               catch (std::exception ex)
               {
                 auto message = ex.what();
-                if (debug) std::cout << "Exception caught on callback call: " << ex.what() << std::endl;
+                if (Debug) std::cout << "Exception caught on callback call: " << ex.what() << std::endl;
               }
               try
               {
@@ -274,9 +263,9 @@ namespace
               catch (std::exception ex)
               {
                 auto message = ex.what();
-                if (debug) std::cout << "Exception caught on attempt to erase RequestCallback: " << ex.what() << std::endl;
+                if (Debug) std::cout << "Exception caught on attempt to erase RequestCallback: " << ex.what() << std::endl;
               }
-              if (debug)
+              if (Debug)
               {
                 std::cout << "Timed out request with id = " << header.RequestHandle << " removed from callbacks queue " << std::endl;
               }
@@ -286,7 +275,7 @@ namespace
               callbackIt++;
             }
           }
-          lock.unlock();
+          Mutex.unlock();
           std::this_thread::sleep_for(std::chrono::microseconds(1000));
         }
       });
@@ -349,7 +338,8 @@ namespace
       requestQueueCleanerThread.join();
 
       if (Debug) std::cout << "binary_client| Cleaning callbacks queue" << std::endl;
-      std::unique_lock<std::mutex> lock(Mutex);
+      
+      Mutex.lock();
       ResponseHeader header;
       header.ServiceResult = OpcUa::StatusCode::BadSessionClosed;
       for (CallbackMap::iterator callbackIt = Callbacks.begin(); callbackIt != Callbacks.end(); callbackIt++)
@@ -358,7 +348,7 @@ namespace
         callbackIt->second.second(std::vector<char>(), header);
       }
       Callbacks.clear();
-      lock.unlock();
+      Mutex.unlock();
       if (Debug) std::cout << "binary_client| deleted." << std::endl;
     }
 
@@ -656,9 +646,9 @@ namespace
         });
       };
       
-      std::unique_lock<std::mutex> lock(Mutex);
+      Mutex.lock();
       Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(calculateTimeoutTime(request.Header.Timeout), responseCallback)));
-      lock.unlock();
+      Mutex.unlock();
 
       Send(request);
       if (Debug) {std::cout << "binary_client| Publish  <--" << std::endl;}
@@ -772,7 +762,7 @@ namespace
 
     virtual void CloseSecureChannel(uint32_t channelId)
     {
-      ioSendMutex.lock();
+      std::lock_guard<std::recursive_mutex> send_lock (ioSendMutex);
       try
       {
         if (Debug) {std::cout << "binary_client| CloseSecureChannel -->" << std::endl;}
@@ -795,7 +785,6 @@ namespace
       {
         std::cerr << "Closing secure channel failed with error: " << exc.what() << std::endl;
       }
-      ioSendMutex.unlock();
       if (Debug) {std::cout << "binary_client| CloseSecureChannel <--" << std::endl;}
     }
 
@@ -809,19 +798,22 @@ private:
       ResponseCallback responseCallback = [requestCallback](std::vector<char> buffer, ResponseHeader h){
         requestCallback->OnData(std::move(buffer), std::move(h));
       };
-      std::unique_lock<std::mutex> lock(Mutex);
+      Mutex.lock();
       Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(calculateTimeoutTime(request.Header.Timeout), responseCallback)));
-      lock.unlock();
+      Mutex.unlock();
 
       Send(request);
-
+      if (request.Header.Timeout == 0)
+      {
+        int i = 0; 
+        i++;
+      }
       return requestCallback->WaitForData(std::chrono::milliseconds(request.Header.Timeout));
     }
 
     template <typename Request>
     void Send(Request request) const
     {
-
       // TODO add support for breaking message into multiple chunks
       SecureHeader hdr(MT_SECURE_MESSAGE, CHT_SINGLE, ChannelSecurityToken.SecureChannelId);
       const SymmetricAlgorithmHeader algorithmHeader = CreateAlgorithmHeader();
@@ -831,7 +823,7 @@ private:
       hdr.AddSize(RawSize(sequence));
       hdr.AddSize(RawSize(request));
 
-      ioSendMutex.lock();
+      std::lock_guard<std::recursive_mutex> send_lock(ioSendMutex);
       try
       {
         Stream << hdr << algorithmHeader << sequence << request << flush;
@@ -855,10 +847,8 @@ private:
             //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
             break;
         }
-        ioSendMutex.unlock();
         throw ex;
       }
-      ioSendMutex.unlock();
     }
 
     void InitializeRequestHeader(RequestHeader& requestHeader)
@@ -874,9 +864,9 @@ private:
       ResponseCallback responseCallback = [=](std::vector<char> buffer, ResponseHeader h){
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
-      std::unique_lock<std::mutex> lock(Mutex);
+      Mutex.lock();
       Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
-      lock.unlock();
+      Mutex.unlock();
       Send(*request);
       return requestContext;
     }
@@ -889,9 +879,9 @@ private:
       ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
-      std::unique_lock<std::mutex> lock(Mutex);
+      Mutex.lock();
       Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
-      lock.unlock();
+      Mutex.unlock();
       Send(*request);
       return requestContext;
     }
@@ -904,9 +894,9 @@ private:
       ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
-      std::unique_lock<std::mutex> lock(Mutex);
+      Mutex.lock();
       Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
-      lock.unlock();
+      Mutex.unlock();
       Send(*request);
       return requestContext;
     }
@@ -919,9 +909,9 @@ private:
       ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
-      std::unique_lock<std::mutex> lock(Mutex);
+      Mutex.lock();
       Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
-      lock.unlock();
+      Mutex.unlock();
       Send(*request);
       return requestContext;
     }
@@ -935,9 +925,9 @@ private:
       ResponseCallback responseCallback = [requestContext](std::vector<char> buffer, ResponseHeader h){
         requestContext->OnDataReceived(std::move(buffer), std::move(h));
       };
-      std::unique_lock<std::mutex> lock(Mutex);
+      Mutex.lock();
       Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
-      lock.unlock();
+      Mutex.unlock();
       Send(*request);
       return requestContext;
     }
@@ -948,7 +938,7 @@ private:
       std::vector<char> buffer;
       NodeId id;
 
-      std::unique_lock<std::mutex> send_lock(ioReceiveMutex);
+      std::lock_guard<std::recursive_mutex> send_lock(ioReceiveMutex);
       try
       {
         Binary::SecureHeader responseHeader;
@@ -1047,7 +1037,7 @@ private:
 
         // Call callbacks for all pending requests:
         {
-          std::unique_lock<std::mutex> lock(Mutex);
+          Mutex.lock();
           std::vector<char> emptyBuffer;
           for (CallbackMap::const_iterator callbackIt = Callbacks.begin(); callbackIt != Callbacks.end();)
           {
@@ -1070,11 +1060,11 @@ private:
             }
             callbackIt = Callbacks.erase(callbackIt);
           }
-          lock.unlock();
+          Mutex.unlock();
         }
         throw ex;
       }
-      std::unique_lock<std::mutex> lock(Mutex);
+      Mutex.lock();
       CallbackMap::const_iterator callbackIt = Callbacks.find(header.RequestHandle);
       if (callbackIt == Callbacks.end())
       {
@@ -1099,9 +1089,13 @@ private:
         {
           std::cout << "binary-client| Integer type exception caught in Receive callback: " << ex << "\n";
         }
+        catch (...)
+        {
+          std::cout << "binary-client| unknown type exception caught in Receive callback" << "\n";
+        }
         Callbacks.erase(callbackIt);
       }
-      lock.unlock();
+      Mutex.unlock();
     }
 
     Binary::Acknowledge HelloServer(const SecureConnectionParams& params)
@@ -1110,7 +1104,7 @@ private:
 
       Acknowledge ack;
 
-      ioSendMutex.lock();
+      std::lock_guard<std::recursive_mutex> send_lock(ioSendMutex);
       try
       {
         Binary::Hello hello;
@@ -1133,10 +1127,8 @@ private:
       }
       catch (std::exception ex)
       {
-        ioSendMutex.unlock();
         throw ex;
       }
-      ioSendMutex.unlock();
       if (Debug) {std::cout << "binary_client| HelloServer <--" << std::endl;}
 
       return ack;
@@ -1206,9 +1198,11 @@ private:
 
     std::thread callback_thread;
     CallbackThread CallbackService;
-    mutable std::mutex Mutex;
-    mutable std::mutex ioSendMutex;
-    mutable std::mutex ioReceiveMutex;
+    
+    mutable std::recursive_mutex Mutex;
+    mutable std::recursive_mutex ioSendMutex;
+    mutable std::recursive_mutex ioReceiveMutex;
+
     ConnectionStatusChangeCallback statusChangeCallback;
     mutable std::atomic<ClientConnectionState> ConnectionState;
 
@@ -1229,7 +1223,7 @@ private:
     const SequenceHeader sequence = CreateSequenceHeader();
     hdr.AddSize(RawSize(sequence));
     {
-      std::unique_lock<std::mutex> send_lock(ioSendMutex);
+      std::lock_guard<std::recursive_mutex> send_lock(ioSendMutex);
       Stream << hdr << algorithmHeader << sequence << request << flush;
     }
   }

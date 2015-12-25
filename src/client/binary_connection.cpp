@@ -50,6 +50,11 @@ namespace
       THROW_OS_ERROR("Unable to create socket for connecting to the host '" + host + ".");
     }
 
+    int connectionTimeout = 10000;
+    int longestReceiveTimeout = 120000; //Should be something like server state read interval + read request timeout 
+
+    int setSocketOptionError = setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&connectionTimeout, sizeof(int));
+
     sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -58,8 +63,12 @@ namespace
     int error = connect(sock, (sockaddr*)& addr, sizeof(addr));
     if (error < 0)
     {
+      int socketError = WSAGetLastError();
       THROW_OS_ERROR(std::string("Unable connect to host '") + host + std::string("'. "));
     }
+
+    setSocketOptionError = setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&longestReceiveTimeout, sizeof(int));
+
     return sock;
   }
 

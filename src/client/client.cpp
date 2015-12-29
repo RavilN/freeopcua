@@ -64,21 +64,28 @@ namespace OpcUa
       {
         break;
       }
-      if (Debug)  { std::cout << "KeepAliveThread | renewing secure channel " << std::endl; }
-      OpenSecureChannelParameters params;
-      params.ClientProtocolVersion = 0;
-      params.RequestType = SecurityTokenRequestType::Renew;
-      params.SecurityMode = MessageSecurityMode::None;
-      params.ClientNonce = std::vector<uint8_t>(1, 0);
-      params.RequestLifeTime = Period;
-      OpenSecureChannelResponse response = Server->OpenSecureChannel(params);
-      if ( (response.ChannelSecurityToken.RevisedLifetime < Period) && (response.ChannelSecurityToken.RevisedLifetime > 0) )
+      try
       {
-        Period = response.ChannelSecurityToken.RevisedLifetime;
-      }
+        if (Debug)  { std::cout << "KeepAliveThread | renewing secure channel " << std::endl; }
+        OpenSecureChannelParameters params;
+        params.ClientProtocolVersion = 0;
+        params.RequestType = SecurityTokenRequestType::Renew;
+        params.SecurityMode = MessageSecurityMode::None;
+        params.ClientNonce = std::vector<uint8_t>(1, 0);
+        params.RequestLifeTime = Period;
+        OpenSecureChannelResponse response = Server->OpenSecureChannel(params);
+        if ((response.ChannelSecurityToken.RevisedLifetime < Period) && (response.ChannelSecurityToken.RevisedLifetime > 0))
+        {
+          Period = response.ChannelSecurityToken.RevisedLifetime;
+        }
 
-      if (Debug)  { std::cout << "KeepAliveThread | read a variable from address space to keep session open " << std::endl; }
-      NodeToRead.GetValue();
+        if (Debug)  { std::cout << "KeepAliveThread | read a variable from address space to keep session open " << std::endl; }
+        NodeToRead.GetValue();
+      }
+      catch (std::exception ex)
+      {
+        if (Debug) { std::cout << "KeepAliveThread | caught exception at attempt to renew secure channel " << ex.what() << std::endl; }
+      }
     }
     Running = false;
     if (Debug)  

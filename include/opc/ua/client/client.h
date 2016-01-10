@@ -39,7 +39,7 @@ namespace OpcUa
     public:
       /// @brief Internal 
       // Send keepalive request to server so it does not disconnect us
-      KeepAliveThread(bool debug=false) : StopRequest(false), Running(false), Debug(debug) {}
+      KeepAliveThread(bool debug = false) : StopRequest(false), Running(false), Debug(debug) { numberOfStarts = 0; }
       void Start( Services::SharedPtr server, Node node, Duration period);
       void Stop();
 
@@ -49,11 +49,15 @@ namespace OpcUa
       Node NodeToRead;
       Services::SharedPtr Server;
       Duration Period = 1200000;
-      std::atomic<bool> StopRequest;
-      std::atomic<bool> Running;
+      
+      // These two variables are accessed from within the acquired Mutex, so no need to be atomic:
+      bool StopRequest;
+      bool Running;
+      
       std::condition_variable Condition;
       std::mutex Mutex;
       bool Debug = false;
+      std::atomic<int> numberOfStarts;
   };
 
   typedef std::function<uint32_t(ClientConnectionState state, OpcUa::StatusCode statusCode, const std::string& errorMessage)> UaClientStateChangeCallback;

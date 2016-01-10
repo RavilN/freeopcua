@@ -81,43 +81,56 @@ namespace
   {
   public:
     RequestCallback()
-      : lock(m, std::defer_lock_t())
     {
+      dataReceived = false;
     }
     ~RequestCallback()
     {
-      lock.lock();
-      lock.unlock();
+      std::lock_guard<std::mutex> lock(m);
     }
 
     void OnData(std::vector<char> data, ResponseHeader h)
     {
-      //PrintBlob(data);
-      lock.lock();
-      Data = std::move(data);
-      this->header = std::move(h);
-      lock.unlock();
+      {
+        std::lock_guard<std::mutex> lock(m);
+        Data = std::move(data);
+        this->header = std::move(h);
+        dataReceived = true;
+      }
       doneEvent.notify_all();
     }
 
     T WaitForData(std::chrono::milliseconds msec)
     {
-      lock.lock();
-      doneEvent.wait_for(lock, msec); // This wait_for call releases the lock and waits for notification
-      // When notification is received, the lock is acquired again, so now it is safe to access data:
       T result;
-	    result.Header = std::move(this->header);
-      if ( Data.empty() )
+      if (result.TypeId == OpcUa::CLOSE_SECURE_CHANNEL_REQUEST)
       {
-        std::cout << "Error: Received empty packet from server" << std::endl;
+        return result;
       }
-	    else
-	    {
-		    BufferInputChannel bufferInput(Data);
-		    IStreamBinary in(bufferInput);
-		    in >> result;
-	    }
-      lock.unlock(); // And finally release the lock
+      if (msec.count() == 0)
+      {
+        msec = std::chrono::milliseconds(0x7FFFFFFF); //TODO - put proper max value
+      }
+      {
+        std::unique_lock<std::mutex> lock(m);
+        doneEvent.wait_for(lock, msec, [=] {return dataReceived; }); // This wait_for call releases the lock and waits for notification
+        // When notification is received, the lock is acquired again, so now it is safe to access data:
+
+        result.Header = std::move(this->header);
+        if ((((uint32_t)header.ServiceResult) & 0xC0000000) == 0)
+        {
+          try
+          {
+            BufferInputChannel bufferInput(Data);
+            IStreamBinary in(bufferInput);
+            in >> result;
+          }
+          catch (std::exception ex)
+          {
+            result.Header.ServiceResult = OpcUa::StatusCode::BadDecodingError;
+          }
+        }
+      }
       return result;
     }
 
@@ -125,8 +138,8 @@ namespace
     std::vector<char> Data;
 	  ResponseHeader	  header;
     std::mutex m;
-    std::unique_lock<std::mutex> lock;
     std::condition_variable doneEvent;
+    bool dataReceived;
   };
 
   class CallbackThread
@@ -140,34 +153,54 @@ namespace
       void post(std::function<void()> callback)
       {
         if (Debug)  { std::cout << "binary_client| CallbackThread :  start post" << std::endl; }
-        std::unique_lock<std::mutex> lock(Mutex);
-        Queue.push(callback);
+        {
+          std::lock_guard<std::mutex> lock(Mutex);
+          Queue.push(callback);
+        }
         Condition.notify_one();
         if (Debug)  { std::cout << "binary_client| CallbackThread :  end post" << std::endl; }
       }
 
       void Run()
       {
-        while (true)
+        bool exitFlag = false;
+        while (!exitFlag)
         {
           if (Debug)  { std::cout << "binary_client| CallbackThread : waiting for next post" << std::endl; }
-          std::unique_lock<std::mutex> lock(Mutex);
-          Condition.wait(lock, [&]() { return (StopRequest == true) || ( ! Queue.empty() ) ;} );
-          if (StopRequest)
+          std::queue<std::function<void()>> queueCopy;
           {
-            if (Debug)  { std::cout << "binary_client| CallbackThread : exited." << std::endl; }
-            return;
+            std::unique_lock<std::mutex> lock(Mutex);
+            Condition.wait(lock, [&]() { return (StopRequest == true) || (!Queue.empty()); });
+
+            
+            // At this point the Mutex is acquired, so variables can be safely accessed:
+            if (StopRequest)
+            {
+              if (Debug)  { std::cout << "binary_client| CallbackThread : exited." << std::endl; }
+              exitFlag = true;
+            }
+            else
+            {
+              queueCopy = Queue;
+              while (!Queue.empty())
+              {
+                Queue.pop();
+              }
+            }
           }
-          while ( ! Queue.empty() ) //to avoid crashing on spurious events
+          Condition.notify_one();
+         
+          if (Debug) 
           {
-            if (Debug)  { std::cout << "binary_client| CallbackThread : condition has triggered copying callback and poping. queue size is  " << Queue.size() << std::endl; }
-            std::function<void()> callbackcopy = Queue.front();
-            Queue.pop();
-            lock.unlock();
-            if (Debug)  { std::cout << "binary_client| CallbackThread : now calling callback." << std::endl; }
-            callbackcopy();
-            if (Debug)  { std::cout << "binary_client| CallbackThread : callback called." << std::endl; }
-            lock.lock();
+            std::cout << "binary_client| CallbackThread : Processing  entries from queue, size is  " << queueCopy.size() << std::endl;
+          }
+          while (!queueCopy.empty()) 
+          {
+              std::function<void()> callback = queueCopy.front();
+              queueCopy.pop();
+              if (Debug)  { std::cout << "binary_client| CallbackThread : now calling callback." << std::endl; }
+              callback();
+              if (Debug)  { std::cout << "binary_client| CallbackThread : callback has been called." << std::endl; }
           }
         }
       }
@@ -175,16 +208,18 @@ namespace
       void Stop()
       {
         if (Debug)  { std::cout << "binary_client| CallbackThread : stopping." << std::endl; }
-        StopRequest = true;
+        {
+          std::lock_guard<std::mutex> lock(Mutex);
+          StopRequest = true;
+        }
         Condition.notify_all();
       }
 
     private:
       bool Debug = false;
       std::mutex Mutex;
-      std::unique_lock<std::mutex> lock;
       std::condition_variable Condition;
-      std::atomic<bool> StopRequest;
+      bool StopRequest;
       std::queue<std::function<void()>> Queue;
   };
 
@@ -202,7 +237,7 @@ namespace
   private:
     typedef std::function<void(std::vector<char>, ResponseHeader)> ResponseCallback;
     typedef std::map<uint32_t, std::pair<std::chrono::system_clock::time_point, ResponseCallback>> CallbackMap;
-
+    OpenSecureChannelParameters secureChannelParams;
 
   public:
     BinaryClient(std::shared_ptr<IOChannel> channel, const SecureConnectionParams& params, bool debug, ConnectionStatusChangeCallback callback)
@@ -217,11 +252,10 @@ namespace
     {
       statusChangeCallback = callback;
       ConnectionState = ClientConnectionState::Disconnected;
-      //statusChangeCallback(ConnectionState, OpcUa::StatusCode::Good, "Initial state - disconnected");
-      
+
+      HelloServer(params);
       //Initialize the worker thread for subscriptions
       callback_thread = std::thread([&](){ CallbackService.Run(); });
-
       requestQueueCleanerThread = std::thread([&](){
         while (!Finished)
         {
@@ -279,62 +313,47 @@ namespace
           std::this_thread::sleep_for(std::chrono::microseconds(1000));
         }
       });
-      HelloServer(params);
-
       ReceiveThread = std::move(std::thread([=]()
       {
-        while( !Finished )
-        {
-          try
-          {
-            Receive();
-          }
-          catch (const std::exception& exc)
-          {
-            if (Finished)
-            {
-              if (Debug) std::cerr << "binary_client | disconnected from Server" << std::endl;
-            }
-            else
-            {
-              if (Debug) std::cerr << "binary_client | error receiving data: " << exc.what() << std::endl;
-            }
-          }
-          catch (const char* message)
-          {
-            if (Debug) std::cerr << "binary_client | char error receiving data: " << message << std::endl;
-          }
-          catch (const std::string& message)
-          {
-            if (Debug) std::cerr << "binary_client | string error receiving data: " << message << std::endl;
-          }
-          catch (...)
-          {
-            if (Debug) std::cerr << "binary_client | error receiving data, unknown error" << std::endl;
-          }
-        }
+        while (!Finished && Receive());
       }));
     }
 
-    ~BinaryClient()
+    void StopReceiving()
     {
       ConnectionState = ClientConnectionState::Disconnecting;
       Finished = true;
-      
+
       if (Debug) std::cout << "binary_client| Stopping callback thread." << std::endl;
       CallbackService.Stop();
-      if (Debug) std::cout << "binary_client| Joining service thread." << std::endl;
-      callback_thread.join(); //Not sure it is necessary
-      
-      if (Debug) std::cout << "binary_client| Stopping communication channel." << std::endl;
-      Channel->Stop();
-      if (Debug) std::cout << "binary_client| Communication channel stopped." << std::endl;
 
-      // The channel must be closed before joining to the ReceiveThread. Otherwise the receive thread would not exit (will exit only when UA Server closes connection)
+      if (Debug) std::cout << "binary_client| Stopping communication channel for read." << std::endl;
+      Channel->Stop(BreakableChannel::StopReceive);
+      if (Debug) std::cout << "binary_client| Communication channel stopped for read." << std::endl;
+    }
+
+    void CloseConnection()
+    {
+      try
+      {
+        Channel->Close();
+      }
+      catch (std::exception ex)
+      {
+        if (Debug) std::cout << "binary_client| Error closing socket: " << ex.what() << std::endl;
+      }
+    }
+    ~BinaryClient()
+    {
+      StopReceiving();
+      CloseConnection();
+      if (Debug) std::cout << "binary_client| Joining callback service thread." << std::endl;
+      callback_thread.join();
+
       if (Debug) std::cout << "binary_client| Joining receive thread." << std::endl;
       ReceiveThread.join();
       if (Debug) std::cout << "binary_client| Receive tread stopped." << std::endl;
-
+      
       requestQueueCleanerThread.join();
 
       if (Debug) std::cout << "binary_client| Cleaning callbacks queue" << std::endl;
@@ -415,7 +434,7 @@ namespace
       CloseSessionRequest request;
       CloseSessionResponse response;
       response = Send<CloseSessionResponse>(request);
-      if (Debug)  { std::cout << "binary_client| CloseSession <--" << std::endl; }
+      if (Debug)  { std::cout << "binary_client| CloseSession <--" << " status code " << (uint32_t) response.Header.ServiceResult << std::endl; }
       ConnectionState = ClientConnectionState::Disconnected;
       //statusChangeCallback(ConnectionState, StatusCode::Good, "");
       return response;
@@ -802,11 +821,24 @@ private:
       Callbacks.insert(std::make_pair(request.Header.RequestHandle, std::make_pair(calculateTimeoutTime(request.Header.Timeout), responseCallback)));
       Mutex.unlock();
 
-      Send(request);
-      if (request.Header.Timeout == 0)
+      try
       {
-        int i = 0; 
-        i++;
+        Send(request);
+      }
+      catch (std::exception ex)
+      {
+        Response result;
+        result.Header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+        result.Header.RequestHandle = request.Header.RequestHandle;
+        result.Header.Timestamp = request.Header.UtcTime;
+        Mutex.lock();
+        CallbackMap::iterator iter = Callbacks.find(request.Header.RequestHandle);
+        if (iter != Callbacks.end())
+        {
+          Callbacks.erase(iter);
+        }
+        Mutex.unlock();
+        return result;
       }
       return requestCallback->WaitForData(std::chrono::milliseconds(request.Header.Timeout));
     }
@@ -823,31 +855,9 @@ private:
       hdr.AddSize(RawSize(sequence));
       hdr.AddSize(RawSize(request));
 
-      std::lock_guard<std::recursive_mutex> send_lock(ioSendMutex);
-      try
       {
+        std::lock_guard<std::recursive_mutex> send_lock(ioSendMutex);
         Stream << hdr << algorithmHeader << sequence << request << flush;
-      }
-      catch (std::exception ex)
-      {
-        switch (ConnectionState)
-        {
-          case ClientConnectionState::Connecting:
-          case ClientConnectionState::Reconnecting:
-            ConnectionState = ClientConnectionState::CouldNotConnect;
-            //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
-            break;
-          case ClientConnectionState::Disconnecting:
-            ConnectionState = ClientConnectionState::Disconnected;
-            //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
-            break;
-          case ClientConnectionState::Connected:
-          case ClientConnectionState::Reconnected:
-            ConnectionState = ClientConnectionState::CommunicationError;
-            //statusChangeCallback(ConnectionState, StatusCode::BadCommunicationError, ex.what());
-            break;
-        }
-        throw ex;
       }
     }
 
@@ -867,7 +877,26 @@ private:
       Mutex.lock();
       Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
       Mutex.unlock();
-      Send(*request);
+
+      try
+      {
+        Send(*request);
+      }
+      catch (std::exception ex)
+      {
+        ResponseHeader responseHeader;
+        responseHeader.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+        responseHeader.RequestHandle = request->Header.RequestHandle;
+        responseHeader.Timestamp = request->Header.UtcTime;
+        requestContext->OnDataReceived(std::vector<char>(), std::move(responseHeader));
+        Mutex.lock();
+        CallbackMap::iterator iter = Callbacks.find(request->Header.RequestHandle);
+        if (iter != Callbacks.end())
+        {
+          Callbacks.erase(iter);
+        }
+        Mutex.unlock();
+      }
       return requestContext;
     }
 
@@ -882,8 +911,25 @@ private:
       Mutex.lock();
       Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
       Mutex.unlock();
-      Send(*request);
-      return requestContext;
+      try
+      {
+        Send(*request);
+      }
+      catch (std::exception ex)
+      {
+        ResponseHeader responseHeader;
+        responseHeader.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+        responseHeader.RequestHandle = request->Header.RequestHandle;
+        responseHeader.Timestamp = request->Header.UtcTime;
+        requestContext->OnDataReceived(std::vector<char>(), std::move(responseHeader));
+        Mutex.lock();
+        CallbackMap::iterator iter = Callbacks.find(request->Header.RequestHandle);
+        if (iter != Callbacks.end())
+        {
+          Callbacks.erase(iter);
+        }
+        Mutex.unlock();
+      }      return requestContext;
     }
 
     virtual std::shared_ptr<AsyncRequestContext<OpcUa::CreateSubscriptionRequest, OpcUa::CreateSubscriptionResponse>> beginSend(std::shared_ptr<OpcUa::CreateSubscriptionRequest> request, std::function<bool(const std::shared_ptr<OpcUa::CreateSubscriptionRequest>& request, std::shared_ptr<OpcUa::CreateSubscriptionResponse> response)>callbackArg)
@@ -897,7 +943,25 @@ private:
       Mutex.lock();
       Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
       Mutex.unlock();
-      Send(*request);
+      try
+      {
+        Send(*request);
+      }
+      catch (std::exception ex)
+      {
+        ResponseHeader responseHeader;
+        responseHeader.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+        responseHeader.RequestHandle = request->Header.RequestHandle;
+        responseHeader.Timestamp = request->Header.UtcTime;
+        requestContext->OnDataReceived(std::vector<char>(), std::move(responseHeader));
+        Mutex.lock();
+        CallbackMap::iterator iter = Callbacks.find(request->Header.RequestHandle);
+        if (iter != Callbacks.end())
+        {
+          Callbacks.erase(iter);
+        }
+        Mutex.unlock();
+      }
       return requestContext;
     }
 
@@ -912,7 +976,25 @@ private:
       Mutex.lock();
       Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
       Mutex.unlock();
-      Send(*request);
+      try
+      {
+        Send(*request);
+      }
+      catch (std::exception ex)
+      {
+        ResponseHeader responseHeader;
+        responseHeader.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+        responseHeader.RequestHandle = request->Header.RequestHandle;
+        responseHeader.Timestamp = request->Header.UtcTime;
+        requestContext->OnDataReceived(std::vector<char>(), std::move(responseHeader));
+        Mutex.lock();
+        CallbackMap::iterator iter = Callbacks.find(request->Header.RequestHandle);
+        if (iter != Callbacks.end())
+        {
+          Callbacks.erase(iter);
+        }
+        Mutex.unlock();
+      }
       return requestContext;
     }
 
@@ -928,70 +1010,103 @@ private:
       Mutex.lock();
       Callbacks.insert(std::make_pair(request->Header.RequestHandle, std::make_pair(calculateTimeoutTime(request->Header.Timeout), responseCallback)));
       Mutex.unlock();
-      Send(*request);
+      try
+      {
+        Send(*request);
+      }
+      catch (std::exception ex)
+      {
+        ResponseHeader responseHeader;
+        responseHeader.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+        responseHeader.RequestHandle = request->Header.RequestHandle;
+        responseHeader.Timestamp = request->Header.UtcTime;
+        requestContext->OnDataReceived(std::vector<char>(), std::move(responseHeader));
+        Mutex.lock();
+        CallbackMap::iterator iter = Callbacks.find(request->Header.RequestHandle);
+        if (iter != Callbacks.end())
+        {
+          Callbacks.erase(iter);
+        }
+        Mutex.unlock();
+      }
       return requestContext;
     }
 
-    void Receive() const
+    bool Receive() const
     {
+      bool result = false;
       ResponseHeader header;
       std::vector<char> buffer;
       NodeId id;
-
-      std::lock_guard<std::recursive_mutex> send_lock(ioReceiveMutex);
+      std::lock_guard<std::recursive_mutex> receiveLock(ioReceiveMutex);
       try
       {
-        Binary::SecureHeader responseHeader;
-        Stream >> responseHeader;
+        // Message structure is:
+        // 1. MessageHeader;
+        // 2. SecurityHeader
+        // 3. SequenceHeader
+        // 4. Body
+        // 5. Padding
+        // 6. Signature
 
+        Binary::SecureHeader messageHeader;
+        // 1. Read MessageHeader
+        Stream >> messageHeader;
+
+        // Now read the rest of the message into the buffer, so next message can be read event this one cannot be read:
+        const std::size_t messageHeaderSize = RawSize(messageHeader);
+
+        // 2. Read SecurityHeader:
         size_t algo_size;
-        if (responseHeader.Type == MessageType::MT_SECURE_OPEN)
+        if (messageHeader.Type == MessageType::MT_SECURE_OPEN)
         {
           AsymmetricAlgorithmHeader responseAlgo;
           Stream >> responseAlgo;
           algo_size = RawSize(responseAlgo);
         }
-        else if (responseHeader.Type == MessageType::MT_ERROR)
+        else if (messageHeader.Type == MessageType::MT_ERROR)
         {
-          StatusCode error;
-          std::string msg;
-          Stream >> error;
-          Stream >> msg;
-          std::stringstream stream;
-          stream << "Received error message from server: " << ToString(error) << ", " << msg;
-          throw std::runtime_error(stream.str());
+          // If message type is error, then message structure is different:
+          //StatusCode error;
+          //std::string msg;
+          //Stream >> error;
+          //Stream >> msg;
+          //std::stringstream stream;
+          throw std::runtime_error("Received TCP message of type ERR from server");
         }
         else //(responseHeader.Type == MessageType::MT_SECURE_MESSAGE )
         {
+          // 2. Another type of SecurityHeader:
           Binary::SymmetricAlgorithmHeader responseAlgo;
           Stream >> responseAlgo;
           algo_size = RawSize(responseAlgo);
         }
 
+        // 3. Read SequenceHeader:
         Binary::SequenceHeader responseSequence;
         Stream >> responseSequence; // TODO Check for request Number
 
-        const std::size_t expectedHeaderSize = RawSize(responseHeader) + algo_size + RawSize(responseSequence);
-        if (expectedHeaderSize >= responseHeader.Size)
-        {
-          std::stringstream stream;
-          stream << "Size of received message " << responseHeader.Size << " bytes is invalid. Expected size " << expectedHeaderSize << " bytes";
-          throw std::runtime_error(stream.str());
-        }
-
-        const std::size_t dataSize = responseHeader.Size - expectedHeaderSize;
-        buffer.resize(dataSize);
+        const std::size_t messageBodySize = messageHeader.Size - messageHeaderSize;
+        size_t sequenceHeaderSize = RawSize(responseSequence);
+        std::size_t responseDataSize = messageHeader.Size - messageHeaderSize - algo_size - sequenceHeaderSize;
+        buffer.resize(responseDataSize);
         BufferInputChannel bufferInput(buffer);
-        Binary::RawBuffer raw(&buffer[0], dataSize);
+        Binary::RawBuffer raw(&buffer[0], responseDataSize);
         Stream >> raw;
-
         IStreamBinary in(bufferInput);
 
-        in >> id;
-        in >> header;
+        // 4. Read Response Body partially:
+        in >> id;       // 4.1 Message Id
+        in >> header;   // 4.2 Response header
+        if (header.RequestHandle != responseSequence.RequestId)
+        {
+          if (Debug)std::cout << "binary_client| Receive - request handle in SequenceHEader " << responseSequence.RequestId <<
+            "does not match with the one in response header: " << header.RequestHandle << std::endl;
+        }
         if (Debug)std::cout << "binary_client| Got response id: " << id << " and handle " << header.RequestHandle << std::endl;
 
-        if (header.ServiceResult != StatusCode::Good) {
+        if (( ((uint32_t) header.ServiceResult) & 0xC0000000) != 0)
+        {
           std::cout << "binary_client| Received a response from server with error status: " << OpcUa::ToString(header.ServiceResult) << std::endl;
         }
 
@@ -1001,6 +1116,7 @@ private:
           std::cerr << "Receive ServiceFault from Server with StatusCode " << OpcUa::ToString(header.ServiceResult) << std::endl;
           std::cerr << std::endl;
         }
+        result = true;
       }
       catch (std::exception ex)
       {
@@ -1062,40 +1178,46 @@ private:
           }
           Mutex.unlock();
         }
-        throw ex;
+        //throw ex;
       }
-      Mutex.lock();
-      CallbackMap::const_iterator callbackIt = Callbacks.find(header.RequestHandle);
-      if (callbackIt == Callbacks.end())
+
+      if (result)
       {
-        std::cout << "binary_client| No callback found for message with id: " << id << " and handle " << header.RequestHandle << std::endl;
+        Mutex.lock();
+        CallbackMap::const_iterator callbackIt = Callbacks.find(header.RequestHandle);
+        if (callbackIt == Callbacks.end())
+        {
+          std::cout << "binary_client| No callback found for message with id: " << id << " and handle " << header.RequestHandle << std::endl;
+        }
+        else
+        {
+          if (buffer.size() == 0)
+          {
+            header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
+          }
+          // TODO - Probably it is better to call function outside of the lock
+          try
+          {
+            callbackIt->second.second(std::move(buffer), std::move(header));
+          }
+          catch (std::exception ex)
+          {
+            std::cout << "binary-client| Exception caught in Receive callback: " << ex.what() << "\n";
+          }
+          catch (uint32_t ex)
+          {
+            std::cout << "binary-client| Integer type exception caught in Receive callback: " << ex << "\n";
+          }
+          catch (...)
+          {
+            std::cout << "binary-client| unknown type exception caught in Receive callback" << "\n";
+          }
+          Callbacks.erase(callbackIt);
+        }
+        Mutex.unlock();
       }
-      else
-      {
-        if (buffer.size() == 0)
-        {
-          header.ServiceResult = OpcUa::StatusCode::BadCommunicationError;
-        }
-        // TODO - Probably it is better to call function outside of the lock
-        try
-        {
-          callbackIt->second.second(std::move(buffer), std::move(header));
-        }
-        catch (std::exception ex)
-        {
-          std::cout << "binary-client| Exception caught in Receive callback: " << ex.what() << "\n";
-        }
-        catch (uint32_t ex)
-        {
-          std::cout << "binary-client| Integer type exception caught in Receive callback: " << ex << "\n";
-        }
-        catch (...)
-        {
-          std::cout << "binary-client| unknown type exception caught in Receive callback" << "\n";
-        }
-        Callbacks.erase(callbackIt);
-      }
-      Mutex.unlock();
+
+      return result;
     }
 
     Binary::Acknowledge HelloServer(const SecureConnectionParams& params)
@@ -1109,10 +1231,10 @@ private:
       {
         Binary::Hello hello;
         hello.ProtocolVersion = 0;
-        hello.ReceiveBufferSize = 0xFFFFFF;
-        hello.SendBufferSize = 0xFFFFFF;
-        hello.MaxMessageSize = 0xFFFFFF;
-        hello.MaxChunkCount = 256;
+        hello.ReceiveBufferSize = 0xFFFFFF; // Min. value is 8192
+        hello.SendBufferSize =    0xFFFFFF; // Min. value is 8192
+        hello.MaxMessageSize = 0; // 0 means no limit
+        hello.MaxChunkCount = 1; // Currently there is no support for chunks, so set it to 1
         hello.EndpointUrl = params.EndpointUrl;
 
         Binary::Header hdr(Binary::MT_HELLO, Binary::CHT_SINGLE);
@@ -1122,11 +1244,30 @@ private:
 
         Header respHeader;
         Stream >> respHeader; // TODO add check for acknowledge header
-
-        Stream >> ack; // TODO check for connection parameters
+        switch (respHeader.Type)
+        {
+        case Binary::MT_ACKNOWLEDGE:
+          Stream >> ack; // TODO check for connection parameters
+          break;
+        case Binary::MT_ERROR:
+          {
+            uint32_t errorCode;
+            std::string errorMessage;
+            Stream >> errorCode;
+            Stream >> errorMessage;
+            if (Debug) { std::cout << "binary_client| HelloServer <-- Server returned error: code = " << errorCode << ", message = " << errorMessage << std::endl; }
+            throw "binary_client|HelloServer: Server returned error message instead of ACK";
+          }
+          break;
+        default:
+          if (Debug) { std::cout << "binary_client| HelloServer <-- Server returned unexpected message type " << respHeader.Type << std::endl; }
+          throw "binary_client|HelloServer: Server returned unexpected message type";
+          break;
+        }
       }
       catch (std::exception ex)
       {
+        CloseConnection();
         throw ex;
       }
       if (Debug) {std::cout << "binary_client| HelloServer <--" << std::endl;}

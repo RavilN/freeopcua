@@ -34,15 +34,18 @@ int main(int argc, char** argv)
 		//std::string endpoint = "opc.tcp://user:password@192.168.56.101:48030";
 		//std::string endpoint = "opc.tcp://127.0.0.1:4841/freeopcua/server/";
 		//std::string endpoint = "opc.tcp://localhost:53530/OPCUA/SimulationServer/";
-		//std::string endpoint = "opc.tcp://localhost:48010";
-    std::string endpoint = "opc.tcp://onewa.cloudapp.net:4840";
+		std::string endpoint = "opc.tcp://localhost:48010";
+    //std::string endpoint = "opc.tcp://localhost:4842";
+    //std::string endpoint = "opc.tcp://onewa.cloudapp.net:4840";
+    // opc.tcp://opcua.demo-this.com:51210/UA/SampleServer
+    // opc.tcp://opcserver.mAutomation.net:4841
 
 
 		if (argc > 1)
 			endpoint = argv[1];
 
 		std::cout << "Connecting to: " << endpoint << std::endl;
-		bool debug = false;
+		bool debug = true;
 		OpcUa::UaClient client(debug);
 		client.Connect(endpoint);
 

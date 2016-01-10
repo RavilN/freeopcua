@@ -21,6 +21,12 @@ namespace OpcUa
   class BreakableChannel
   {
   public:
+    enum StopType
+    {
+      StopReceive = 0,
+      StopSend,
+      StopBoth
+    };
     virtual ~BreakableChannel(){}
     BreakableChannel(){}
     BreakableChannel(const BreakableChannel&) = delete;
@@ -28,7 +34,9 @@ namespace OpcUa
     BreakableChannel& operator=(const BreakableChannel&) = delete;
 
   public:
+    virtual void Close(){};
     virtual void Stop() = 0;
+    virtual void Stop(StopType st){ Stop(); };
   };
 
 

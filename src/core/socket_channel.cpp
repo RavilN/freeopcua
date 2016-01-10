@@ -47,12 +47,36 @@ OpcUa::SocketChannel::~SocketChannel()
   Stop();
 }
 
+void OpcUa::SocketChannel::Stop(StopType st)
+{
+  if (Socket != ~0)
+  {
+    int error = shutdown(Socket, (int)st);
+    if (error < 0)
+    {
+      std::cerr << "Failed to stop socket connection for type " << (int)st << ", error: " << strerror(errno) << std::endl;
+    }
+  }
+}
+
 void OpcUa::SocketChannel::Stop()
 {
-  int error = shutdown(Socket, 2);
-  if (error < 0)
+  Stop(StopType::StopBoth);
+}
+void OpcUa::SocketChannel::Close()
+{
+  if (Socket != ~0)
   {
-    std::cerr << "Failed to close socket connection. " << strerror(errno) << std::endl;
+    int error = closesocket(Socket);
+    if (error != 0)
+    {
+      std::cerr << "Failed to close socket connection. " << strerror(errno) << std::endl;
+    }
+    else
+    {
+      std::cout << "SocketChannel| Stop: closed socket connection. " << std::endl;
+    }
+    Socket = ~0;
   }
 }
 
@@ -67,7 +91,12 @@ std::size_t OpcUa::SocketChannel::Receive(char* data, std::size_t size)
   {
     THROW_OS_ERROR("Connection was closed by host.");
   }
-  return (std::size_t)size;
+  if (size != received)
+  {
+    int i = 0;
+    i++;
+  } 
+  return (std::size_t)received;
 }
 
 void OpcUa::SocketChannel::Send(const char* message, std::size_t size)

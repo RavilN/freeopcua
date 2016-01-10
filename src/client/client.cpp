@@ -32,10 +32,6 @@ namespace OpcUa
 
   void KeepAliveThread::Start(Services::SharedPtr server, Node node, Duration period)
   {
-    if (Running)
-    {
-      Stop();
-    }
     if (Server.get() != 0)
     {
       int i = 0;
@@ -44,79 +40,126 @@ namespace OpcUa
     Server = server;
     NodeToRead = node;
     Period = period;
-    Running = true;
-    StopRequest = false;
-    Thread = std::thread([this] { this->Run(); });
+    {
+      if (Debug)  { std::cout << "KeepAliveThread | Starting." << std::endl; }
+      std::lock_guard<std::mutex> lock(Mutex);
+      
+      // At this point it should not be running, and there should be no stop request:
+      if (Running)
+      {
+        throw "KeepAliveThread| Start: Internal error - already started";
+      }
+      if (StopRequest)
+      {
+        throw "KeepAliveThread| Start: Internal error - stop requested on start";
+      }
+      Running = true;
+    }
+    try
+    {
+      Thread = std::thread([this] { this->Run(); });
+      numberOfStarts++;
+    }
+    catch (std::exception ex)
+    {
+      std::string m = ex.what();
+    }
   }
 
   void KeepAliveThread::Run()
   {
-    if (Debug)  { std::cout << "KeepAliveThread | Starting." << std::endl; }
-    while ( ! StopRequest )
+    if (Debug)  { std::cout << "KeepAliveThread | Started." << std::endl; }
+    while ( true )
     {
       if (Debug)  { std::cout << "KeepAliveThread | Sleeping for: " << (int64_t) ( Period * 0.7 )<< std::endl; }
-      std::unique_lock<std::mutex> lock(Mutex);
-      if (Condition.wait_for(lock, std::chrono::milliseconds((int64_t)(Period * 0.7)), [=](){return StopRequest==true; } ) )
+      
       {
-        break;
-      }
-      if (StopRequest)
-      {
-        break;
-      }
-      try
-      {
-        if (Debug)  { std::cout << "KeepAliveThread | renewing secure channel " << std::endl; }
-        OpenSecureChannelParameters params;
-        params.ClientProtocolVersion = 0;
-        params.RequestType = SecurityTokenRequestType::Renew;
-        params.SecurityMode = MessageSecurityMode::None;
-        params.ClientNonce = std::vector<uint8_t>(1, 0);
-        params.RequestLifeTime = Period;
-        OpenSecureChannelResponse response = Server->OpenSecureChannel(params);
-        if ((response.ChannelSecurityToken.RevisedLifetime < Period) && (response.ChannelSecurityToken.RevisedLifetime > 0))
+        std::unique_lock<std::mutex> lock(Mutex);
+        Condition.wait_for(lock, std::chrono::milliseconds((int64_t)(Period * 0.7)), [=](){return StopRequest == true; });
+        if (!StopRequest)
         {
-          Period = response.ChannelSecurityToken.RevisedLifetime;
-        }
+          try
+          {
+            if (Debug)  { std::cout << "KeepAliveThread | renewing secure channel " << std::endl; }
+            OpenSecureChannelParameters params;
+            params.ClientProtocolVersion = 0;
+            params.RequestType = SecurityTokenRequestType::Renew;
+            params.SecurityMode = MessageSecurityMode::None;
+            params.ClientNonce = std::vector<uint8_t>(1, 0);
+            params.RequestLifeTime = Period;
+            OpenSecureChannelResponse response = Server->OpenSecureChannel(params);
+            if (response.Header.ServiceResult != StatusCode::Good)
+            {
+              if (Debug) { std::cout << "KeepAliveThread | OpenSecureChannel failed: status code = " << (uint32_t) response.Header.ServiceResult << std::endl; }
+            }
+            else
+            {
+              if ((response.ChannelSecurityToken.RevisedLifetime < Period) && (response.ChannelSecurityToken.RevisedLifetime > 0))
+              {
+                Period = response.ChannelSecurityToken.RevisedLifetime;
+              }
+            }
 
-        if (Debug)  { std::cout << "KeepAliveThread | read a variable from address space to keep session open " << std::endl; }
-        NodeToRead.GetValue();
-      }
-      catch (std::exception ex)
-      {
-        if (Debug) { std::cout << "KeepAliveThread | caught exception at attempt to renew secure channel " << ex.what() << std::endl; }
+            if (Debug)  { std::cout << "KeepAliveThread | read a variable from address space to keep session open " << std::endl; }
+            NodeToRead.GetValue();
+          }
+          catch (std::exception ex)
+          {
+            // TODO - for now ignore failure, let the server to close connection
+            if (Debug) { std::cout << "KeepAliveThread | caught exception at attempt to renew secure channel " << ex.what() << std::endl; }
+          }
+        }
+        else
+        {
+          break;
+        }
       }
     }
-    Running = false;
-    if (Debug)  
     {
-      std::cout << "KeepAliveThread | Stopped" << std::endl;
+      std::lock_guard<std::mutex> lock(Mutex);
+      Running = false;
+      StopRequest = false;
     }
+    Condition.notify_all();
   }
 
   void KeepAliveThread::Stop()
   {
-    if (Running)
+    bool wasRunning;
+
+    // 1. Set Stop flag:
     {
-      if (Debug)  { std::cout << "KeepAliveThread | Stopping." << std::endl; }
+      std::lock_guard<std::mutex> lock(Mutex);
+      wasRunning = Running;
+      if (Running)
+      {
+        if (Debug) std::cout << "KeepAliveThread | Stopping..." << std::endl;
+      }
+      else
+      {
+        if (Debug) std::cout << "KeepAliveThread | No need to stop - is not running" << std::endl;
+      }
       StopRequest = true;
-      Condition.notify_all();
-      try
-      {
-        Thread.join();
-      }
-      catch (std::system_error ex)
-      {
-        if (Debug) { std::cout << "KeepaliveThread | Exception thrown at attempt to join: " << ex.what() << std::endl; }
-      }
     }
-    else
+    Condition.notify_all();
+
+    // 2. Wait until it is not running:
     {
+      std::unique_lock<std::mutex> lock(Mutex);
+      Condition.wait(lock, [&]{return !Running; });
+      // After wait method call the Mutex is acquired.
+      // When the lock variable goes out of scope and destroyed, the Mutex is released
+      StopRequest = false; // Set it back to false, so it is ready for next start.
+    }
+    if (wasRunning)
+    {
+      Thread.join();
       if (Debug)
       {
-        std::cout << "KeepAliveThread | Not running" << std::endl;
+        std::cout << "KeepAliveThread | Stopped" << std::endl;
       }
     }
+
     //Release references to the binary_client, so it can clear its resources:
     Server.reset();
     NodeToRead = Node();

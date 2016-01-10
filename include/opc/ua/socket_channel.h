@@ -26,7 +26,8 @@ namespace OpcUa
     virtual void Send(const char* message, std::size_t size);
 
     virtual void Stop();
-
+    virtual void Stop(StopType st);
+    virtual void Close();
   private:
     int Socket;
   };
